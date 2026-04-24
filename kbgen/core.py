@@ -281,7 +281,7 @@ def structural_scan(root: Path) -> ScanData:
                     if dst_rel != src_rel:
                         file_deps.add((src_rel, dst_rel))
         exports[module] = sorted(exp_names)[:12]
-        anchors[module] = sorted(exp_anchors)[:20]
+        anchors[module] = sorted(exp_anchors)[:120]
 
     return ScanData(
         root=root,
@@ -890,10 +890,10 @@ def rank_module_anchors(module: str, anchors: list[str]) -> list[str]:
     ranked = sorted(anchors, key=score)
 
     # In component-heavy repos, keep anchors focused on feature/business components.
-    # Drop shadcn primitives entirely when enough non-primitive anchors are available.
+    # Drop shadcn primitives entirely whenever any business anchor is available.
     if module == "components":
         business = [anchor for anchor in ranked if not is_ui_primitive_anchor(anchor)]
-        if len(business) >= 4:
+        if len(business) >= 1:
             return business  # drop shadcn primitives entirely
 
     return ranked
