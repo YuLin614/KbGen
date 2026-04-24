@@ -15,6 +15,7 @@ DEFAULT_KEY_PATH_LIMIT = 0
 SOFT_TOKEN_TARGET = 12000
 SOFT_TOKEN_MAX = 22000
 ROUTE_INDEX_LIMIT = 200
+DB_SCHEMA_LIMIT = 180
 BLUEPRINT_PREFIX_CACHE: dict[str, dict[str, str]] = {}
 
 SCHEMA_TEXT = """Keys:
@@ -31,6 +32,7 @@ f = directional flow (mostly acyclic)
 fd = file dependency digest src>dst(count)
 cy = mutual module dependency cycles (a<->b)
 ri = route index summary
+db = db schema index (table/column/relation summary)
 ac = auth chain summary
 no = negative knowledge (discourage paths)
 h = decision hints
@@ -984,6 +986,100 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     return invariants
 
 
+def extract_db_schema_index(root: Path, modules: dict[str, list[Path]]) -> list[str]:
+    table_cols: dict[tuple[str, str], set[str]] = defaultdict(set)
+    fk_edges: set[tuple[str, str, str]] = set()
+
+    def add_table(module: str, table: str) -> None:
+        if table:
+            table_cols.setdefault((module, table), set())
+
+    def add_col(module: str, table: str, col: str) -> None:
+        if table and col:
+            table_cols[(module, table)].add(col)
+
+    def add_fk(module: str, src_table: str, target: str) -> None:
+        target_table = target.split(".")[0] if "." in target else target
+        if src_table and target_table:
+            fk_edges.add((module, src_table, target_table))
+
+    def extract_call_block(text: str, open_paren_idx: int) -> str:
+        depth = 0
+        for i in range(open_paren_idx, len(text)):
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return text[open_paren_idx + 1 : i]
+        return ""
+
+    for module, files in modules.items():
+        for f in files:
+            if f.suffix.lower() != ".py":
+                continue
+            rel = f.relative_to(root).as_posix().lower()
+            if "/tests/" in rel or "/test_" in rel or rel.endswith("_test.py"):
+                continue
+            if not any(k in rel for k in ("model", "alembic", "migration", "schema", "dao", "datastore")):
+                continue
+            try:
+                text = f.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+
+            # SQLAlchemy model classes.
+            class_pat = re.compile(r"^class\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\([^\)]*\))?:\n((?:[ \t]+.*\n)+)", re.MULTILINE)
+            for cm in class_pat.finditer(text):
+                body = cm.group(1)
+                tab = re.search(r"__tablename__\s*=\s*['\"]([^'\"]+)['\"]", body)
+                if not tab:
+                    continue
+                table = tab.group(1)
+                add_table(module, table)
+                for colm in re.finditer(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:db\.)?Column\s*\(", body, re.MULTILINE):
+                    col_name = colm.group(1)
+                    if not col_name.startswith("_"):
+                        add_col(module, table, col_name)
+                for fkm in re.finditer(r"ForeignKey\(\s*['\"]([^'\"]+)['\"]", body):
+                    add_fk(module, table, fkm.group(1))
+
+            # Alembic migration create_table blocks.
+            for tm in re.finditer(r"op\.create_table\s*\(\s*['\"]([^'\"]+)['\"]", text):
+                table = tm.group(1)
+                add_table(module, table)
+                open_idx = text.find("(", tm.start())
+                if open_idx < 0:
+                    continue
+                block = extract_call_block(text, open_idx)
+                if not block:
+                    continue
+                for colm in re.finditer(r"sa\.Column\s*\(\s*['\"]([^'\"]+)['\"]", block):
+                    add_col(module, table, colm.group(1))
+                for fkm in re.finditer(r"sa\.ForeignKeyConstraint\s*\([^\)]*\[\s*['\"]([^'\"]+)['\"]", block):
+                    add_fk(module, table, fkm.group(1))
+
+            # add_column(table, sa.Column(name,...)) in migrations.
+            for am in re.finditer(r"op\.add_column\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*sa\.Column\s*\(\s*['\"]([^'\"]+)['\"]", text):
+                add_col(module, am.group(1), am.group(2))
+
+    entries: list[str] = []
+    for (module, table), cols in sorted(table_cols.items()):
+        col_list = sorted(cols)
+        if col_list:
+            rendered = ",".join(col_list[:12])
+            if len(col_list) > 12:
+                rendered += ",..."
+            entries.append(f"{module}.{table}({rendered})")
+        else:
+            entries.append(f"{module}.{table}")
+    for module, src, dst in sorted(fk_edges):
+        entries.append(f"rel:{module}.{src}->{dst}")
+
+    return entries[:DB_SCHEMA_LIMIT]
+
+
 def build_snapshot(
     synth: dict[str, ModuleSynthesis],
     scan: ScanData,
@@ -1055,6 +1151,7 @@ def build_snapshot(
         "fd": compress_file_deps(scan.file_deps, module_count=len(scan.modules)),
         "cy": module_cycles[:20],
         "ri": scan.route_index,
+        "db": extract_db_schema_index(scan.root, scan.modules),
         "ac": scan.auth_chain[:12],
         "no": sorted(set(neg))[:30],
         "h": hints,
@@ -1854,6 +1951,11 @@ def compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         keep_fd = max(24, int(len(fd) * scale))
         candidate["fd"] = fd[:keep_fd]
 
+    db = candidate.get("db", [])
+    if isinstance(db, list) and len(db) > 0:
+        keep_db = max(36, int(len(db) * scale))
+        candidate["db"] = db[:keep_db]
+
     # Extreme fallback only for very large snapshots: keep navigation core while
     # bounding path/dependency fanout.
     if token_size(candidate) > SOFT_TOKEN_MAX:
@@ -1864,6 +1966,9 @@ def compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         fd = candidate.get("fd", [])
         if isinstance(fd, list):
             candidate["fd"] = fd[:48]
+        db = candidate.get("db", [])
+        if isinstance(db, list):
+            candidate["db"] = db[:60]
 
     return candidate
 
@@ -1978,7 +2083,7 @@ def incremental_update(
     merged = (
         json.loads(json.dumps(previous))
         if previous
-        else {"m": {}, "f": [], "fd": [], "cy": [], "ri": [], "ac": [], "no": [], "h": {}, "hf": {}, "hr": {}, "ls": []}
+        else {"m": {}, "f": [], "fd": [], "cy": [], "ri": [], "db": [], "ac": [], "no": [], "h": {}, "hf": {}, "hr": {}, "ls": []}
     )
     merged.setdefault("m", {})
 
@@ -1996,6 +2101,7 @@ def incremental_update(
     merged["fd"] = current.get("fd", [])
     merged["cy"] = current.get("cy", [])
     merged["ri"] = current.get("ri", [])
+    merged["db"] = current.get("db", [])
     merged["ac"] = current.get("ac", [])
     merged["no"] = current.get("no", [])
     merged["h"] = current.get("h", {})
