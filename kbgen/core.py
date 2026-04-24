@@ -1352,6 +1352,40 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
         strict_avoid: bool = False,
     ) -> list[str]:
         ranked = collect_scored_anchors(module_order, task)
+
+        if task == "add_endpoint":
+            # Prefer endpoint-like paths so controller files are not lost by
+            # capped per-module anchor lists.
+            endpoint_path_first: list[str] = []
+            seen_paths: set[str] = set()
+            include_kws = ("/controllers/", "controller", "blueprint", "/api/", "/routes", "/route", "endpoint", "views")
+            exclude_kws = (
+                "/tests/", "/test_", "/alembic", "/migration", "/db.",
+                "/s3.", "/ses.", "/provider.", "/handlers.", "/__init__.",
+                "run_worker", "worker",
+            )
+            for mod in module_order:
+                for path in modules.get(mod, {}).get("p", []):
+                    lower = path.lower()
+                    if lower in seen_paths:
+                        continue
+                    seen_paths.add(lower)
+                    if not any(kw in lower for kw in include_kws):
+                        continue
+                    if any(kw in lower for kw in exclude_kws):
+                        continue
+                    endpoint_path_first.append(best_anchor_for_path(path))
+
+            if endpoint_path_first:
+                merged_ranked: list[str] = []
+                seen_ranked: set[str] = set()
+                for anchor in endpoint_path_first + ranked:
+                    if anchor in seen_ranked:
+                        continue
+                    seen_ranked.add(anchor)
+                    merged_ranked.append(anchor)
+                ranked = merged_ranked
+
         selected: list[str] = []
 
         for anchor in ranked:
