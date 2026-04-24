@@ -868,24 +868,34 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
 
     # UUID v7 constraints and migration/install hooks.
     if uuid_hits >= 1:
-        invariants.append(f"{module}>uuid_v7")
+        invariants.append(
+            f"{module}>uuid_v7: primary identifiers are expected to use UUIDv7 generation/migration paths"
+        )
 
     # UTC-only temporal handling.
     if utc_hits >= 2 and datetime_hits >= 2:
-        invariants.append(f"{module}>utc_datetime")
+        invariants.append(
+            f"{module}>utc_datetime: use timezone-aware UTC datetimes and avoid naive local timestamps"
+        )
 
     # JWT / Keycloak / OIDC auth chain expectations.
     auth_module = ("auth" in module_lower) or ("auth" in role)
     if auth_module or auth_hits >= 5:
-        invariants.append(f"{module}>jwt_or_oidc_auth")
+        invariants.append(
+            f"{module}>jwt_or_oidc_auth: protected paths are expected to validate JWT/OIDC bearer identity"
+        )
 
     # DLQ replay/discard semantics.
     if dlq_hits >= 2 and replay_hits >= 1:
-        invariants.append(f"{module}>dlq_replay_flow")
+        invariants.append(
+            f"{module}>dlq_replay_flow: dead-letter entries support controlled replay/discard recovery flows"
+        )
 
     # Data-oriented modules typically enforce schema/model boundaries.
     if "data" in role and schema_hits >= 3:
-        invariants.append(f"{module}>schema_boundary")
+        invariants.append(
+            f"{module}>schema_boundary: persistence should flow through schema/model/dao boundaries"
+        )
 
     return invariants
 
@@ -1094,7 +1104,8 @@ def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str
         facets: list[str] = []
         auth_hits = names.count("auth") + names.count("jwt") + names.count("keycloak")
         audit_hits = names.count("audit")
-        if "auth" in lower or auth_hits >= 2:
+        # Keep auth facet strict to avoid false positives from shared auth helpers.
+        if "auth" in lower or "auth" in role:
             facets.append("auth and identity")
         if "audit" in lower or audit_hits >= 2:
             facets.append("audit logging")
