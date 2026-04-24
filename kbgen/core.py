@@ -14,6 +14,7 @@ TOOL_VERSION = "kbgen@0.1"
 DEFAULT_KEY_PATH_LIMIT = 0
 SOFT_TOKEN_TARGET = 12000
 SOFT_TOKEN_MAX = 22000
+ROUTE_INDEX_LIMIT = 200
 
 SCHEMA_TEXT = """Keys:
 m = modules
@@ -342,7 +343,7 @@ def structural_scan(root: Path) -> ScanData:
         exports=exports,
         anchors=anchors,
         file_deps=sorted(file_deps),
-        route_index=sorted(route_entries)[:24],
+        route_index=sorted(route_entries)[:ROUTE_INDEX_LIMIT],
         auth_chain=sorted(auth_markers)[:16],
     )
 
@@ -535,6 +536,11 @@ def resolve_absolute_like_import(root: Path, target: str) -> Path | None:
 def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
     suffix = path.suffix.lower()
     rel = path.relative_to(root).as_posix()
+    lower_rel = rel.lower()
+
+    # Skip test routes; they are rarely part of real endpoint inventory.
+    if "/tests/" in lower_rel or "/test_" in lower_rel or lower_rel.startswith("tests/"):
+        return []
 
     # --- Python: Flask / FastAPI / Django routes ---
     if suffix == ".py":
@@ -567,7 +573,7 @@ def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
                 route_path = m.group(1)
                 line = text.count("\n", 0, m.start()) + 1
                 entries.append(f"api:{route_path}->{rel}:{line}")
-        return entries[:12]
+        return entries
 
     # --- JavaScript/TypeScript: Next.js app router ---
     if suffix not in {".js", ".jsx", ".ts", ".tsx"}:
@@ -805,7 +811,7 @@ def build_snapshot(
         "f": sorted(edges)[:30],
         "fd": compress_file_deps(scan.file_deps, module_count=len(scan.modules)),
         "cy": module_cycles[:20],
-        "ri": scan.route_index[:20],
+        "ri": scan.route_index,
         "ac": scan.auth_chain[:12],
         "no": sorted(set(neg))[:30],
         "h": hints,
