@@ -833,12 +833,16 @@ def synthesize(scan: ScanData) -> dict[str, ModuleSynthesis]:
 def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> list[str]:
     invariants: list[str] = []
     snippets: list[str] = []
+    module_lower = module.lower()
 
     # Keep extraction lightweight: scan source-like files and cap total text.
     max_chars = 250_000
     used = 0
     for f in files:
         if f.suffix.lower() not in {".py", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml", ".json"}:
+            continue
+        file_lower = f.as_posix().lower()
+        if "/tests/" in file_lower or "/test_" in file_lower or file_lower.endswith("_test.py") or "/conftest.py" in file_lower:
             continue
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
@@ -854,28 +858,33 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     if not corpus:
         return invariants
 
+    uuid_hits = len(re.findall(r"uuid\s*[_-]?v?7|uuidv7|install_uuid_v7|uuid7", corpus))
+    utc_hits = len(re.findall(r"timezone\.utc|\butc\b|utcnow", corpus))
+    datetime_hits = len(re.findall(r"datetime|timestamp|expires|expiration|created_at|updated_at", corpus))
+    auth_hits = len(re.findall(r"jwt|bearer|keycloak|openid|oidc|oauth|access token|refresh token", corpus))
+    dlq_hits = len(re.findall(r"\bdlq\b|dead[_ -]?letter", corpus))
+    replay_hits = len(re.findall(r"replay|discard|bulk-replay|metrics", corpus))
+    schema_hits = len(re.findall(r"schema|model|alembic|migration|dao|repository", corpus))
+
     # UUID v7 constraints and migration/install hooks.
-    if re.search(r"uuid\s*[_-]?v?7|uuidv7|install_uuid_v7|uuid7", corpus):
+    if uuid_hits >= 1:
         invariants.append(f"{module}>uuid_v7")
 
     # UTC-only temporal handling.
-    has_utc = bool(re.search(r"timezone\.utc|\butc\b|utcnow|fromisoformat\(|isoformat\(", corpus))
-    has_datetime_ctx = bool(re.search(r"datetime|timestamp|expires|expiration|created_at|updated_at", corpus))
-    if has_utc and has_datetime_ctx:
+    if utc_hits >= 2 and datetime_hits >= 2:
         invariants.append(f"{module}>utc_datetime")
 
     # JWT / Keycloak / OIDC auth chain expectations.
-    if re.search(r"jwt|bearer|keycloak|openid|oidc|oauth|access token|refresh token", corpus):
+    auth_module = ("auth" in module_lower) or ("auth" in role)
+    if auth_module or auth_hits >= 5:
         invariants.append(f"{module}>jwt_or_oidc_auth")
 
     # DLQ replay/discard semantics.
-    has_dlq = bool(re.search(r"\bdlq\b|dead[_ -]?letter", corpus))
-    has_replay = bool(re.search(r"replay|discard|bulk-replay|metrics", corpus))
-    if has_dlq and has_replay:
+    if dlq_hits >= 2 and replay_hits >= 1:
         invariants.append(f"{module}>dlq_replay_flow")
 
     # Data-oriented modules typically enforce schema/model boundaries.
-    if "data" in role and re.search(r"schema|model|alembic|migration|dao|repository", corpus):
+    if "data" in role and schema_hits >= 3:
         invariants.append(f"{module}>schema_boundary")
 
     return invariants
