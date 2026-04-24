@@ -940,8 +940,14 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
         )
 
     # API key removal (DMS-146): system uses JWT-only; no new API key auth may be added.
-    # Detected via docstring/comment text in auth_check schema or auth handler files.
-    if no_api_key_hits >= 1:
+    # Keep explicit hits, and propagate to service modules that clearly participate
+    # in auth flows so API constraints land on service owners (not desktop clients).
+    is_service_module = module_lower.endswith("-service") or module_lower.endswith("_service")
+    explicit_no_api_key_owner = is_service_module or auth_module or ("common" in module_lower)
+    no_api_key_expected = (no_api_key_hits >= 1 and explicit_no_api_key_owner) or (
+        is_service_module and (auth_module or delegation_hits >= 1 or http_error_hits >= 1)
+    )
+    if no_api_key_expected:
         invariants.append(
             f"{module}>no_api_key: authentication is JWT/OIDC only (DMS-146);"
             f" API key support has been removed and must not be re-introduced"
