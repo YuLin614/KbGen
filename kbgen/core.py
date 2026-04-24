@@ -635,10 +635,29 @@ def build_snapshot(
     modules: dict[str, Any] = {}
     edges: list[list[str]] = []
     neg: list[str] = []
+    # Full path→anchor lookup built before the [:12] cap, used by build_file_hints.
+    path_to_best_anchor: dict[str, str] = {}
 
     for name, item in sorted(synth.items()):
         key_paths = module_key_paths(scan.root, scan.modules.get(name, []), item.exports, key_path_limit)
         ranked_anchors = rank_module_anchors(name, item.anchors)
+        # Register all ranked anchors (full pool, not capped) for path lookup.
+        for anchor in ranked_anchors:
+            if "@" not in anchor:
+                continue
+            sym, rest = anchor.split("@", 1)
+            anchor_path = rest.rsplit(":", 1)[0] if ":" in rest else rest
+            if anchor_path not in path_to_best_anchor:
+                # First occurrence wins (highest-ranked for that path).
+                score = 2 if (sym and sym[0].isupper()) else 1
+                existing = path_to_best_anchor.get(anchor_path)
+                if existing is None:
+                    path_to_best_anchor[anchor_path] = anchor
+                else:
+                    ex_sym = existing.split("@")[0]
+                    ex_score = 2 if (ex_sym and ex_sym[0].isupper()) else 1
+                    if score > ex_score:
+                        path_to_best_anchor[anchor_path] = anchor
         modules[name] = {
             "r": item.role,
             "s": item.summary,
@@ -663,7 +682,7 @@ def build_snapshot(
         neg.append(f"{first}:avoid_blind_search")
 
     hints = build_hints(modules)
-    file_hints = build_file_hints(modules)
+    file_hints = build_file_hints(modules, path_to_best_anchor)
     hint_rationales = build_hint_rationales(file_hints)
     module_cycles = detect_module_cycles(synth)
     if "app<->components" in module_cycles:
@@ -953,7 +972,7 @@ def build_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
     return hints
 
 
-def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
+def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str] | None = None) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
 
     def pick_paths(module_names: list[str], limit: int = 3) -> list[str]:
@@ -1005,6 +1024,10 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
 
     def best_anchor_for_path(path: str) -> str:
         """Upgrade a bare path to its best anchor (symbol@path:line) if one exists."""
+        # Use the full pre-cap lookup first.
+        if path_to_best_anchor and path in path_to_best_anchor:
+            return path_to_best_anchor[path]
+        # Fallback: search capped module anchors.
         candidates: list[tuple[int, str]] = []
         for mod_data in modules.values():
             for anchor in mod_data.get("a", []):
@@ -1014,7 +1037,6 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
                 anchor_path = rest.rsplit(":", 1)[0] if ":" in rest else rest
                 if anchor_path != path:
                     continue
-                # Prefer PascalCase component names (React components)
                 score = 2 if (sym and sym[0].isupper()) else 1
                 candidates.append((score, anchor))
         if candidates:
