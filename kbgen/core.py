@@ -36,6 +36,23 @@ hf = decision hint file targets
 hr = machine-readable task read plan for hf targets
 ls = loop sentinels (bias only)
 
+hr format:
+- each item: {"s":"S1|S2|S3...","t":"anchor_or_path","r":"reason_code"}
+
+hr reason codes:
+- EP_ENTRY = endpoint/route entrypoint
+- EP_WRITE = endpoint write-flow core logic
+- EP_VERIFY = endpoint test/verification target
+- EP_NAV = endpoint-adjacent navigation fallback
+- BUG_REPRO = bug reproduction/assertion target
+- BUG_PATH = bug failure-path/guard logic
+- BUG_HOT = bug hotspot fallback
+- REF_SHARED = shared abstraction target
+- REF_CORE = core logic target
+- REF_STRUCT = structural cleanup target
+- AUTH_PATH = auth/session/token target
+- NAV = generic navigation fallback
+
 All entries are heuristic, not authoritative.
 f may be empty when dependency direction cannot be inferred safely.
 Use snapshot to guide WHERE to explore, not to replace reading code.
@@ -711,7 +728,7 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
         labels = step_labels.get(task, ["S1", "S2", "S3"])
         rows: list[dict[str, Any]] = []
         for idx, target in enumerate(targets[:6]):
-            label = labels[idx] if idx < len(labels) else f"step{idx + 1}"
+            label = labels[idx] if idx < len(labels) else f"S{idx + 1}"
             rows.append({
                 "s": label,
                 "t": target,
@@ -937,9 +954,15 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
             for kw in ("route", "api", "endpoint", "handler", "controller", "post", "put", "patch", "delete"):
                 if kw in text:
                     points += 3
-            for kw in ("create", "insert", "save"):
+            for kw in ("create", "insert", "save", "update", "list", "get"):
                 if kw in text:
                     points += 2
+            for kw in ("file", "record", "document", "item", "entity", "crud"):
+                if kw in text:
+                    points += 4
+            for kw in ("auth", "signin", "signout", "logout", "login", "session", "oauth", "oidc", "token"):
+                if kw in text:
+                    points -= 6
 
         if task == "bugfix":
             if module_name in service_mods:
