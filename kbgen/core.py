@@ -992,6 +992,7 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
 
 def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str:
     lower = module.lower()
+    names = " ".join(f.name.lower() for f in files)
     if lower == "app":
         return "Application routes, pages, and server handlers."
     if lower == "components":
@@ -1030,9 +1031,32 @@ def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str
     if lower in {"common", "shared"}:
         return "Shared cross-service utilities and primitives."
     if lower.endswith("-service") or lower.endswith("_service"):
+        facets: list[str] = []
+        auth_hits = names.count("auth") + names.count("jwt") + names.count("keycloak")
+        audit_hits = names.count("audit")
+        if "auth" in lower or auth_hits >= 2:
+            facets.append("auth and identity")
+        if "audit" in lower or audit_hits >= 2:
+            facets.append("audit logging")
+        if "record" in lower or "record" in names or "file" in names:
+            facets.append("record and file lifecycle")
+        if "notification" in lower or any(k in names for k in ("preference", "policy", "event_type", "channel")):
+            facets.append("notification policies and preferences")
+        if "retention" in names:
+            facets.append("retention workflows")
+        if "share" in names:
+            facets.append("sharing and access")
+        if "dlq" in names or "dead_letter" in names:
+            facets.append("DLQ replay and recovery")
+        if "worker" in names or "celery" in names:
+            facets.append("background workers")
+        if "db" in names or "dao" in names or "model" in names or "alembic" in names:
+            facets.append("persistence")
+        if facets:
+            unique_facets = list(dict.fromkeys(facets))
+            return "Microservice root focused on " + ", ".join(unique_facets[:3]) + "."
         return "Microservice root — contains app, models, controllers, and config."
 
-    names = " ".join(f.name.lower() for f in files)
     if "test" in role:
         return "Test scaffolding and behavior verification."
     if "routing" in role or "route" in names or "controller" in names:
