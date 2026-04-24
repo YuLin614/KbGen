@@ -50,6 +50,9 @@ hr reason codes:
 - REF_SHARED = shared abstraction target
 - REF_CORE = core logic target
 - REF_STRUCT = structural cleanup target
+- UI_ENTRY = UI component/page entrypoint
+- UI_STATE = UI state/store/hook target
+- UI_FLOW = UI interaction flow target
 - AUTH_PATH = auth/session/token target
 - NAV = generic navigation fallback
 
@@ -702,7 +705,7 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
     def reason_for(task: str, target: str) -> str:
         lower = target.lower()
 
-        if task in {"add_endpoint", "ui_feature"}:
+        if task == "add_endpoint":
             if any(k in lower for k in ("route", "api", "handler", "controller", "page", "action")):
                 return "EP_ENTRY"
             if any(k in lower for k in ("service", "create", "post", "insert", "save")):
@@ -711,12 +714,28 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
                 return "EP_VERIFY"
             return "EP_NAV"
 
-        if task in {"bugfix", "ui_bugfix"}:
+        if task == "ui_feature":
+            if any(k in lower for k in ("component", "view", "table", "panel", "dialog", "layout", "page", "feature")):
+                return "UI_ENTRY"
+            if any(k in lower for k in ("hook", "store", "state", "zustand", "use")):
+                return "UI_STATE"
+            return "UI_FLOW"
+
+        if task == "bugfix":
             if any(k in lower for k in ("test", "spec", "assert")):
                 return "BUG_REPRO"
             if any(k in lower for k in ("error", "exception", "validate", "check", "guard", "lock", "retry")):
                 return "BUG_PATH"
             return "BUG_HOT"
+
+        if task == "ui_bugfix":
+            if any(k in lower for k in ("test", "spec", "assert")):
+                return "BUG_REPRO"
+            if any(k in lower for k in ("component", "view", "table", "panel", "dialog", "form", "layout", "page")):
+                return "UI_ENTRY"
+            if any(k in lower for k in ("hook", "store", "state", "zustand", "use")):
+                return "UI_STATE"
+            return "UI_FLOW"
 
         if task in {"refactor", "ui_refactor"}:
             if any(k in lower for k in ("util", "helper", "type", "model", "repository", "adapter", "client", "mapper")):
@@ -1016,6 +1035,38 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
                 if kw in text:
                     points -= 2
 
+        if task == "ui_bugfix":
+            if module_name in ui_mods:
+                points += 7
+            if module_name in service_mods or module_name in data_mods:
+                points -= 3
+            for kw in ("component", "view", "table", "panel", "dialog", "modal", "form", "button", "card", "list", "grid", "layout", "page"):
+                if kw in text:
+                    points += 4
+            for kw in ("hook", "store", "state", "zustand", "use"):
+                if kw in text:
+                    points += 3
+            for kw in ("service", "client", "repository", "api", "endpoint"):
+                if kw in text:
+                    points -= 3
+
+        if task == "ui_feature":
+            if module_name in ui_mods:
+                points += 8
+            if module_name in route_mods:
+                points += 2
+            if module_name in service_mods or module_name in data_mods:
+                points -= 4
+            for kw in ("component", "view", "table", "panel", "dialog", "form", "card", "layout", "page", "feature"):
+                if kw in text:
+                    points += 4
+            for kw in ("hook", "store", "state", "zustand", "use"):
+                if kw in text:
+                    points += 3
+            for kw in ("service", "client", "repository", "api", "endpoint", "create", "insert", "save"):
+                if kw in text:
+                    points -= 3
+
         return (points, -len(path), anchor)
 
     def collect_scored_anchors(module_order: list[str], task: str) -> list[str]:
@@ -1114,14 +1165,14 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
 
     if ui_mods:
         out["ui_bugfix"] = pick_task_hints(
-            "bugfix",
+            "ui_bugfix",
             ui_mods + test_mods + service_mods + sorted(modules),
             ui_mods + test_mods + sorted(modules),
-            set(add_endpoint_hints),
+            set(add_endpoint_hints + bugfix_hints),
             require_ui_mix=True,
         )
         out["ui_feature"] = pick_task_hints(
-            "add_endpoint",
+            "ui_feature",
             ui_mods + route_mods + service_mods + sorted(modules),
             ui_mods + route_mods + sorted(modules),
             set(add_endpoint_hints + bugfix_hints),
