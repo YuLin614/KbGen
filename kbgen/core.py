@@ -812,7 +812,7 @@ def synthesize(scan: ScanData) -> dict[str, ModuleSynthesis]:
     for module, files in scan.modules.items():
         role = infer_role(module, files, module in scan.entry_modules)
         deps = sorted(scan.deps.get(module, set()))
-        inv: list[str] = []
+        inv = infer_module_invariants(module, role, files)
         if module in scan.entry_modules:
             inv.append(f"{module}>entry")
         if "test" in role:
@@ -825,9 +825,60 @@ def synthesize(scan: ScanData) -> dict[str, ModuleSynthesis]:
             anchors=scan.anchors.get(module, []),
             deps=deps,
             used_by=sorted(used_by.get(module, set())),
-            invariants=inv,
+            invariants=sorted(dict.fromkeys(inv))[:8],
         )
     return out
+
+
+def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> list[str]:
+    invariants: list[str] = []
+    snippets: list[str] = []
+
+    # Keep extraction lightweight: scan source-like files and cap total text.
+    max_chars = 250_000
+    used = 0
+    for f in files:
+        if f.suffix.lower() not in {".py", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml", ".json"}:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        lower = text.lower()
+        snippets.append(lower)
+        used += len(lower)
+        if used >= max_chars:
+            break
+
+    corpus = "\n".join(snippets)
+    if not corpus:
+        return invariants
+
+    # UUID v7 constraints and migration/install hooks.
+    if re.search(r"uuid\s*[_-]?v?7|uuidv7|install_uuid_v7|uuid7", corpus):
+        invariants.append(f"{module}>uuid_v7")
+
+    # UTC-only temporal handling.
+    has_utc = bool(re.search(r"timezone\.utc|\butc\b|utcnow|fromisoformat\(|isoformat\(", corpus))
+    has_datetime_ctx = bool(re.search(r"datetime|timestamp|expires|expiration|created_at|updated_at", corpus))
+    if has_utc and has_datetime_ctx:
+        invariants.append(f"{module}>utc_datetime")
+
+    # JWT / Keycloak / OIDC auth chain expectations.
+    if re.search(r"jwt|bearer|keycloak|openid|oidc|oauth|access token|refresh token", corpus):
+        invariants.append(f"{module}>jwt_or_oidc_auth")
+
+    # DLQ replay/discard semantics.
+    has_dlq = bool(re.search(r"\bdlq\b|dead[_ -]?letter", corpus))
+    has_replay = bool(re.search(r"replay|discard|bulk-replay|metrics", corpus))
+    if has_dlq and has_replay:
+        invariants.append(f"{module}>dlq_replay_flow")
+
+    # Data-oriented modules typically enforce schema/model boundaries.
+    if "data" in role and re.search(r"schema|model|alembic|migration|dao|repository", corpus):
+        invariants.append(f"{module}>schema_boundary")
+
+    return invariants
 
 
 def build_snapshot(
