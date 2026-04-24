@@ -933,6 +933,11 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
     service_mods = [m for m in sorted(modules) if "service" in modules[m].get("r", [])]
     test_mods = [m for m in sorted(modules) if "test" in modules[m].get("r", [])]
     data_mods = [m for m in sorted(modules) if "data" in modules[m].get("r", [])]
+    ui_mods = [
+        m for m in sorted(modules)
+        if any(k in m.lower() for k in ("component", "ui", "view", "page", "layout", "hook", "store", "frontend", "client"))
+    ]
+    anchor_to_module: dict[str, str] = {}
 
     def split_anchor(anchor: str) -> tuple[str, str]:
         if "@" not in anchor:
@@ -971,19 +976,29 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
                 points += 2
             if module_name in test_mods:
                 points += 2
+            if module_name in ui_mods:
+                points += 3
             for kw in ("error", "exception", "validate", "check", "retry", "lock", "cache", "fail", "guard"):
                 if kw in text:
                     points += 3
             for kw in ("test", "spec", "assert"):
                 if kw in text:
                     points += 2
+            for kw in ("component", "view", "table", "panel", "dialog", "form", "button", "card", "list", "grid", "use"):
+                if kw in text:
+                    points += 2
 
         if task == "refactor":
             if module_name in service_mods or module_name in data_mods:
                 points += 4
+            if module_name in ui_mods:
+                points += 3
             for kw in ("util", "helper", "base", "adapter", "client", "repository", "model", "type", "mapper", "transform"):
                 if kw in text:
                     points += 3
+            for kw in ("component", "view", "table", "panel", "dialog", "hook", "store"):
+                if kw in text:
+                    points += 2
             for kw in ("route", "api", "endpoint"):
                 if kw in text:
                     points -= 2
@@ -998,11 +1013,18 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
                 if anchor in seen:
                     continue
                 seen.add(anchor)
+                anchor_to_module[anchor] = mod
                 scored.append(score_anchor(anchor, mod, task))
         scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
         return [anchor for _, _, anchor in scored]
 
-    def pick_task_hints(task: str, module_order: list[str], fallback_modules: list[str], avoid: set[str]) -> list[str]:
+    def pick_task_hints(
+        task: str,
+        module_order: list[str],
+        fallback_modules: list[str],
+        avoid: set[str],
+        require_ui_mix: bool = False,
+    ) -> list[str]:
         ranked = collect_scored_anchors(module_order, task)
         selected: list[str] = []
 
@@ -1024,6 +1046,30 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
                 if len(selected) >= 3:
                     break
 
+        if require_ui_mix and ui_mods and selected:
+            has_ui = any(anchor_to_module.get(anchor, "") in ui_mods for anchor in selected)
+            if not has_ui:
+                ui_candidate = next(
+                    (
+                        anchor for anchor in ranked
+                        if anchor_to_module.get(anchor, "") in ui_mods and anchor not in selected and anchor not in avoid
+                    ),
+                    None,
+                )
+                if ui_candidate is None:
+                    ui_candidate = next(
+                        (
+                            anchor for anchor in ranked
+                            if anchor_to_module.get(anchor, "") in ui_mods and anchor not in selected
+                        ),
+                        None,
+                    )
+                if ui_candidate is not None:
+                    if len(selected) >= 3:
+                        selected[-1] = ui_candidate
+                    else:
+                        selected.append(ui_candidate)
+
         if selected:
             return selected[:3]
 
@@ -1037,15 +1083,17 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
     )
     bugfix_hints = pick_task_hints(
         "bugfix",
-        service_mods + route_mods + test_mods + sorted(modules),
-        service_mods + route_mods + sorted(modules),
+        service_mods + ui_mods + route_mods + test_mods + sorted(modules),
+        ui_mods + service_mods + route_mods + sorted(modules),
         set(add_endpoint_hints),
+        require_ui_mix=True,
     )
     refactor_hints = pick_task_hints(
         "refactor",
-        service_mods + data_mods + sorted(modules),
-        service_mods + data_mods + sorted(modules),
+        service_mods + data_mods + ui_mods + sorted(modules),
+        ui_mods + service_mods + data_mods + sorted(modules),
         set(add_endpoint_hints + bugfix_hints),
+        require_ui_mix=True,
     )
     out["add_endpoint"] = add_endpoint_hints
     out["bugfix"] = bugfix_hints
