@@ -620,6 +620,7 @@ def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
     if suffix == ".py":
         entries: list[str] = []
         bp_prefixes: dict[str, str] = {}
+        local_bp_prefixes: dict[str, str] = {}
 
         blueprints_file = _nearest_blueprints_file(path, root)
         if blueprints_file is not None:
@@ -632,9 +633,17 @@ def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
                     BLUEPRINT_PREFIX_CACHE[cache_key] = {}
             bp_prefixes = BLUEPRINT_PREFIX_CACHE.get(cache_key, {})
 
+        # Also resolve blueprint prefixes declared in the same file as decorators.
+        # This fixes standalone blueprints defined in controller modules.
+        try:
+            local_bp_prefixes = _resolve_blueprint_prefixes(text)
+        except Exception:
+            local_bp_prefixes = {}
+
         def with_prefix(decorator_obj: str, route_path: str) -> str:
             obj = decorator_obj.split(".")[-1].strip()
-            return _join_route(bp_prefixes.get(obj, ""), route_path)
+            prefix = bp_prefixes.get(obj, "") or local_bp_prefixes.get(obj, "")
+            return _join_route(prefix, route_path)
 
         # Flask: @bp.route('/path', methods=[...]) or @app.route(...)
         flask_pattern = re.compile(
