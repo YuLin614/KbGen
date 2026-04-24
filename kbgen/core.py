@@ -281,7 +281,7 @@ def structural_scan(root: Path) -> ScanData:
                     if dst_rel != src_rel:
                         file_deps.add((src_rel, dst_rel))
         exports[module] = sorted(exp_names)[:12]
-        anchors[module] = sorted(exp_anchors)[:120]
+        anchors[module] = sorted(exp_anchors)  # no cap; rank_module_anchors caps at 12 for snapshot
 
     return ScanData(
         root=root,
