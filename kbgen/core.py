@@ -662,6 +662,29 @@ def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
                 route_path = m.group(1)
                 line = text.count("\n", 0, m.start()) + 1
                 entries.append(f"api:{route_path}->{rel}:{line}")
+
+        # Expose important query-filter variants for discoverability.
+        # Example: GET .../files?lock_level=... in record-service.
+        if re.search(r"request\.args\.get\(['\"]lock_level['\"]", text):
+            extra: list[str] = []
+            seen = set(entries)
+            for e in entries:
+                m = re.match(r"api:([^\[]+)\[([^\]]+)\]->(.+)", e)
+                if not m:
+                    continue
+                route_path = m.group(1)
+                methods = {x.strip().upper() for x in m.group(2).split("|") if x.strip()}
+                tail = m.group(3)
+                if "GET" not in methods:
+                    continue
+                # lock_level filter applies to listing endpoints, not file-by-id routes.
+                if not route_path.endswith("/files"):
+                    continue
+                variant = f"api:{route_path}?lock_level=[GET]->{tail}"
+                if variant not in seen:
+                    seen.add(variant)
+                    extra.append(variant)
+            entries.extend(extra)
         return entries
 
     # --- JavaScript/TypeScript: Next.js app router ---
