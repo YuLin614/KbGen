@@ -888,6 +888,7 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     dlq_hits = len(re.findall(r"\bdlq\b|dead[_ -]?letter", corpus))
     replay_hits = len(re.findall(r"replay|discard|bulk-replay|metrics", corpus))
     schema_hits = len(re.findall(r"schema|model|alembic|migration|dao|repository", corpus))
+    delegation_hits = len(re.findall(r"is_auth_service|auth_consumer_handler|authconsumerhandlerfactory", corpus))
 
     # UUID v7 constraints and migration/install hooks.
     if uuid_hits >= 1:
@@ -902,10 +903,23 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
         )
 
     # JWT / Keycloak / OIDC auth chain expectations.
+    # Only meaningful for service-like modules (routing/auth/service/data/worker role) or known
+    # auth/common packages — suppresses false positives in CI scripts and desktop client tooling.
     auth_module = ("auth" in module_lower) or ("auth" in role)
-    if auth_module or auth_hits >= 5:
+    is_service_like = any(r in role for r in ("routing", "auth", "service", "data", "worker")) or "auth" in module_lower or "common" in module_lower
+    if auth_module or (is_service_like and auth_hits >= 5):
         invariants.append(
             f"{module}>jwt_or_oidc_auth: protected paths are expected to validate JWT/OIDC bearer identity"
+        )
+
+    # Auth-check delegation: non-auth services forward all authorization decisions to auth-service.
+    # Detected via AuthConsumerHandlerFactory / is_auth_service=False wiring.
+    # Excluded for the auth-service module itself (it is the authority, not a delegator).
+    is_auth_service_module = "auth" in module_lower and "service" in module_lower
+    if delegation_hits >= 1 and not is_auth_service_module:
+        invariants.append(
+            f"{module}>auth_check_delegation: non-auth services delegate all authorization to"
+            f" auth-service via POST /api/v1/auth/check; never re-validate JWT locally"
         )
 
     # DLQ replay/discard semantics.
