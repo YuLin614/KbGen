@@ -643,7 +643,7 @@ def build_snapshot(
             "r": item.role,
             "s": item.summary,
             "e": item.exports[:8],
-            "a": ranked_anchors[:6],
+            "a": ranked_anchors[:12],
             "d": item.deps,
             "u": item.used_by,
             "i": item.invariants,
@@ -961,6 +961,43 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
                     return paths
         return paths
 
+    def pick_ui_paths_by_keywords(
+        module_names: list[str],
+        keywords: list[str],
+        avoid: set[str],
+        limit: int = 3,
+    ) -> list[str]:
+        candidates: list[tuple[int, int, str]] = []
+        seen: set[str] = set()
+        for mod in module_names:
+            for path in modules.get(mod, {}).get("p", []):
+                if path in seen or path in avoid:
+                    continue
+                seen.add(path)
+                lower = path.lower()
+                points = 0
+                if "components/features/" in lower:
+                    points += 6
+                if "components/" in lower:
+                    points += 2
+                for kw in keywords:
+                    if kw in lower:
+                        points += 4
+                candidates.append((points, -len(path), path))
+
+        candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        return [path for _, _, path in candidates[:limit]]
+
+    def merge_targets(primary: list[str], supplement: list[str], limit: int = 3) -> list[str]:
+        out_targets: list[str] = []
+        for target in primary + supplement:
+            if target in out_targets:
+                continue
+            out_targets.append(target)
+            if len(out_targets) >= limit:
+                break
+        return out_targets
+
     route_mods = [m for m in sorted(modules) if "routing" in modules[m].get("r", [])]
     service_mods = [m for m in sorted(modules) if "service" in modules[m].get("r", [])]
     test_mods = [m for m in sorted(modules) if "test" in modules[m].get("r", [])]
@@ -1046,6 +1083,12 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
             for kw in ("hook", "store", "state", "zustand", "use"):
                 if kw in text:
                     points += 3
+            for kw in ("error", "bug", "fix", "fallback", "loading", "empty", "lock", "warning"):
+                if kw in text:
+                    points += 3
+            for kw in ("feature", "create", "new", "add"):
+                if kw in text:
+                    points -= 2
             for kw in ("service", "client", "repository", "api", "endpoint"):
                 if kw in text:
                     points -= 3
@@ -1060,9 +1103,18 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
             for kw in ("component", "view", "table", "panel", "dialog", "form", "card", "layout", "page", "feature"):
                 if kw in text:
                     points += 4
+            for kw in ("filetable", "file-view", "fileview", "file-lock", "filelock", "lock-dialog", "lockdialog"):
+                if kw in text:
+                    points += 5
             for kw in ("hook", "store", "state", "zustand", "use"):
                 if kw in text:
                     points += 3
+            for kw in ("feature", "create", "new", "add", "upload", "filter", "search", "sort", "column", "toolbar"):
+                if kw in text:
+                    points += 3
+            for kw in ("error", "bug", "fix", "fallback"):
+                if kw in text:
+                    points -= 2
             for kw in ("service", "client", "repository", "api", "endpoint", "create", "insert", "save"):
                 if kw in text:
                     points -= 3
@@ -1088,6 +1140,7 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
         fallback_modules: list[str],
         avoid: set[str],
         require_ui_mix: bool = False,
+        strict_avoid: bool = False,
     ) -> list[str]:
         ranked = collect_scored_anchors(module_order, task)
         selected: list[str] = []
@@ -1104,6 +1157,8 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
 
         if len(selected) < 3:
             for anchor in ranked:
+                if strict_avoid and anchor in avoid:
+                    continue
                 if anchor in selected:
                     continue
                 selected.append(anchor)
@@ -1164,26 +1219,45 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
     out["refactor"] = refactor_hints
 
     if ui_mods:
-        out["ui_bugfix"] = pick_task_hints(
+        ui_bugfix_base = pick_task_hints(
             "ui_bugfix",
             ui_mods + test_mods + service_mods + sorted(modules),
             ui_mods + test_mods + sorted(modules),
             set(add_endpoint_hints + bugfix_hints),
             require_ui_mix=True,
+            strict_avoid=True,
         )
-        out["ui_feature"] = pick_task_hints(
+        ui_bugfix_paths = pick_ui_paths_by_keywords(
+            ui_mods,
+            ["file-lock-dialog", "lock-dialog", "file-table", "file-view", "dialog", "error", "warning"],
+            set(add_endpoint_hints + bugfix_hints),
+            limit=2,
+        )
+        out["ui_bugfix"] = merge_targets(ui_bugfix_paths, ui_bugfix_base, limit=3)
+
+        ui_feature_base = pick_task_hints(
             "ui_feature",
             ui_mods + route_mods + service_mods + sorted(modules),
             ui_mods + route_mods + sorted(modules),
-            set(add_endpoint_hints + bugfix_hints),
+            set(add_endpoint_hints + bugfix_hints + out["ui_bugfix"]),
             require_ui_mix=True,
+            strict_avoid=True,
         )
+        ui_feature_paths = pick_ui_paths_by_keywords(
+            ui_mods,
+            ["file-table", "file-view", "file-lock-dialog", "columns", "toolbar", "media-viewer", "upload", "feature"],
+            set(add_endpoint_hints + bugfix_hints + out["ui_bugfix"]),
+            limit=2,
+        )
+        out["ui_feature"] = merge_targets(ui_feature_paths, ui_feature_base, limit=3)
+
         out["ui_refactor"] = pick_task_hints(
             "refactor",
             ui_mods + data_mods + service_mods + sorted(modules),
             ui_mods + sorted(modules),
-            set(add_endpoint_hints + bugfix_hints + refactor_hints),
+            set(add_endpoint_hints + bugfix_hints + refactor_hints + out["ui_bugfix"] + out["ui_feature"]),
             require_ui_mix=True,
+            strict_avoid=True,
         )
 
     auth_mods = [m for m in sorted(modules) if "auth" in modules[m].get("r", [])]
