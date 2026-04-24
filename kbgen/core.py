@@ -53,6 +53,8 @@ hr reason codes:
 - AUTH_PATH = auth/session/token target
 - NAV = generic navigation fallback
 
+task keys may include ui_bugfix, ui_feature, ui_refactor when UI-focused modules are detected.
+
 All entries are heuristic, not authoritative.
 f may be empty when dependency direction cannot be inferred safely.
 Use snapshot to guide WHERE to explore, not to replace reading code.
@@ -691,13 +693,16 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
         "add_endpoint": ["S1", "S2", "S3"],
         "bugfix": ["S1", "S2", "S3"],
         "refactor": ["S1", "S2", "S3"],
+        "ui_bugfix": ["S1", "S2", "S3"],
+        "ui_feature": ["S1", "S2", "S3"],
+        "ui_refactor": ["S1", "S2", "S3"],
         "auth_change": ["S1", "S2", "S3"],
     }
 
     def reason_for(task: str, target: str) -> str:
         lower = target.lower()
 
-        if task == "add_endpoint":
+        if task in {"add_endpoint", "ui_feature"}:
             if any(k in lower for k in ("route", "api", "handler", "controller", "page", "action")):
                 return "EP_ENTRY"
             if any(k in lower for k in ("service", "create", "post", "insert", "save")):
@@ -706,14 +711,14 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
                 return "EP_VERIFY"
             return "EP_NAV"
 
-        if task == "bugfix":
+        if task in {"bugfix", "ui_bugfix"}:
             if any(k in lower for k in ("test", "spec", "assert")):
                 return "BUG_REPRO"
             if any(k in lower for k in ("error", "exception", "validate", "check", "guard", "lock", "retry")):
                 return "BUG_PATH"
             return "BUG_HOT"
 
-        if task == "refactor":
+        if task in {"refactor", "ui_refactor"}:
             if any(k in lower for k in ("util", "helper", "type", "model", "repository", "adapter", "client", "mapper")):
                 return "REF_SHARED"
             if any(k in lower for k in ("service", "domain", "core", "lib")):
@@ -908,6 +913,14 @@ def build_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
     hints["add_endpoint"] = (api_like[:1] + service_like[:1] + test_like[:1]) or names[:2]
     hints["bugfix"] = (service_like[:1] + api_like[:1] + names[:1])[:2] or names[:2]
     hints["refactor"] = (service_like[:1] + names[:2])[:2] or names[:2]
+    ui_like = [
+        n for n in names
+        if any(k in n.lower() for k in ("component", "ui", "view", "page", "layout", "hook", "store", "frontend", "client"))
+    ]
+    if ui_like:
+        hints["ui_bugfix"] = (ui_like[:2] + test_like[:1])[:2] or ui_like[:2]
+        hints["ui_feature"] = (ui_like[:2] + api_like[:1])[:2] or ui_like[:2]
+        hints["ui_refactor"] = ui_like[:2]
     if any("auth" in modules[n].get("r", []) for n in names):
         auth = [n for n in names if "auth" in modules[n].get("r", [])]
         hints["auth_change"] = auth[:2]
@@ -1098,6 +1111,29 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
     out["add_endpoint"] = add_endpoint_hints
     out["bugfix"] = bugfix_hints
     out["refactor"] = refactor_hints
+
+    if ui_mods:
+        out["ui_bugfix"] = pick_task_hints(
+            "bugfix",
+            ui_mods + test_mods + service_mods + sorted(modules),
+            ui_mods + test_mods + sorted(modules),
+            set(add_endpoint_hints),
+            require_ui_mix=True,
+        )
+        out["ui_feature"] = pick_task_hints(
+            "add_endpoint",
+            ui_mods + route_mods + service_mods + sorted(modules),
+            ui_mods + route_mods + sorted(modules),
+            set(add_endpoint_hints + bugfix_hints),
+            require_ui_mix=True,
+        )
+        out["ui_refactor"] = pick_task_hints(
+            "refactor",
+            ui_mods + data_mods + service_mods + sorted(modules),
+            ui_mods + sorted(modules),
+            set(add_endpoint_hints + bugfix_hints + refactor_hints),
+            require_ui_mix=True,
+        )
 
     auth_mods = [m for m in sorted(modules) if "auth" in modules[m].get("r", [])]
     if auth_mods:
