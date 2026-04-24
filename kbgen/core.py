@@ -198,17 +198,30 @@ def infer_role(module: str, files: list[Path], has_entrypoint: bool) -> list[str
     tags: list[str] = []
     names = {f.name.lower() for f in files}
     joined = " ".join(names)
+    suffixes = {f.suffix.lower() for f in files}
+    is_python = ".py" in suffixes and ".ts" not in suffixes and ".tsx" not in suffixes
     if has_entrypoint:
         tags.append("entry")
     if any(k in module.lower() for k in ("api", "route", "http")) or "router" in joined:
         tags.append("routing")
+    # Python backend: controllers and blueprints = routing
+    if is_python and any(k in joined for k in ("controller", "blueprint", "views", "view")):
+        if "routing" not in tags:
+            tags.append("routing")
+    # Python: Celery workers / tasks
+    if is_python and any(k in joined for k in ("task", "worker", "celery", "consumer")):
+        tags.append("worker")
     if any(k in module.lower() for k in ("auth", "login", "session")):
         tags.append("auth")
     if any(k in module.lower() for k in ("db", "repo", "model", "store")):
         tags.append("data")
+    # Python: alembic migrations, models.py, schema.py = data
+    if is_python and any(k in joined for k in ("model", "migration", "alembic", "schema", "orm")):
+        if "data" not in tags:
+            tags.append("data")
     if any(k in module.lower() for k in ("service", "svc", "domain", "logic")):
         tags.append("service")
-    if any(k in module.lower() for k in ("test", "spec")):
+    if any(k in module.lower() for k in ("test", "spec")) or any(k in joined for k in ("test_", "_test", "conftest")):
         tags.append("test")
     if not tags:
         tags.append("module")
@@ -469,10 +482,45 @@ def resolve_absolute_like_import(root: Path, target: str) -> Path | None:
 
 def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
     suffix = path.suffix.lower()
+    rel = path.relative_to(root).as_posix()
+
+    # --- Python: Flask / FastAPI / Django routes ---
+    if suffix == ".py":
+        entries: list[str] = []
+        # Flask: @bp.route('/path', methods=[...]) or @app.route(...)
+        flask_pattern = re.compile(
+            r"@[\w\.]+\.route\(['\"]([^'\"]+)['\"](?:[^)]*methods\s*=\s*\[([^\]]+)\])?",
+        )
+        for m in flask_pattern.finditer(text):
+            route_path = m.group(1)
+            methods_raw = m.group(2) or "GET"
+            methods = re.findall(r"['\"]([A-Z]+)['\"]", methods_raw) or ["GET"]
+            line = text.count("\n", 0, m.start()) + 1
+            method_str = "|".join(sorted(methods))
+            entries.append(f"api:{route_path}[{method_str}]->{rel}:{line}")
+        # FastAPI: @router.get('/path') / @app.post(...) etc.
+        fastapi_pattern = re.compile(
+            r"@[\w\.]+\.(get|post|put|patch|delete|options|head)\(['\"]([^'\"]+)['\"]",
+            re.IGNORECASE,
+        )
+        for m in fastapi_pattern.finditer(text):
+            method = m.group(1).upper()
+            route_path = m.group(2)
+            line = text.count("\n", 0, m.start()) + 1
+            entries.append(f"api:{route_path}[{method}]->{rel}:{line}")
+        # Django: path('route/', view) / re_path
+        django_pattern = re.compile(r"(?:re_)?path\(['\"]([^'\"]+)['\"]")
+        for m in django_pattern.finditer(text):
+            if "urlpatterns" in text or "include(" in text:
+                route_path = m.group(1)
+                line = text.count("\n", 0, m.start()) + 1
+                entries.append(f"api:{route_path}->{rel}:{line}")
+        return entries[:12]
+
+    # --- JavaScript/TypeScript: Next.js app router ---
     if suffix not in {".js", ".jsx", ".ts", ".tsx"}:
         return []
 
-    rel = path.relative_to(root).as_posix()
     if not rel.startswith("app/"):
         return []
 
@@ -801,7 +849,7 @@ def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str
         return "Application routes, pages, and server handlers."
     if lower == "components":
         return "Reusable UI components and view composition units."
-    if lower in {"test", "tests", "__tests__"}:
+    if lower in {"test", "tests", "__tests__"} or lower.startswith("tests_"):
         return "Automated tests, fixtures, and behavior assertions."
     if lower == "hooks":
         return "Shared stateful hooks and lifecycle helpers."
@@ -819,12 +867,31 @@ def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str
         return "Static assets and public runtime resources."
     if lower == "root":
         return "Top-level entrypoints, config, and cross-module glue code."
+    # Python service-specific names
+    if lower in {"controllers", "views", "blueprints"}:
+        return "HTTP route handlers and request dispatch controllers."
+    if lower in {"models", "model"}:
+        return "ORM models and database schema definitions."
+    if lower in {"schemas", "schema"}:
+        return "Request/response validation schemas."
+    if lower in {"tasks", "workers", "celery"}:
+        return "Async task workers and background job definitions."
+    if lower in {"migrations", "alembic"}:
+        return "Database migration scripts and version history."
+    if lower in {"utils", "helpers"}:
+        return "Shared utility functions and helpers."
+    if lower in {"common", "shared"}:
+        return "Shared cross-service utilities and primitives."
+    if lower.endswith("-service") or lower.endswith("_service"):
+        return "Microservice root — contains app, models, controllers, and config."
 
     names = " ".join(f.name.lower() for f in files)
     if "test" in role:
         return "Test scaffolding and behavior verification."
-    if "routing" in role or "route" in names:
+    if "routing" in role or "route" in names or "controller" in names:
         return "HTTP or route entrypoints and request dispatch."
+    if "worker" in role or "task" in names or "celery" in names:
+        return "Async workers and background task execution."
     if "auth" in role:
         return "Authentication, session checks, and identity helpers."
     if "service" in role:
@@ -967,12 +1034,15 @@ def build_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
 
     api_like = [n for n in names if "routing" in modules[n].get("r", [])]
     service_like = [n for n in names if "service" in modules[n].get("r", [])]
+    worker_like = [n for n in names if "worker" in modules[n].get("r", [])]
     test_like = [n for n in names if "test" in modules[n].get("r", [])]
+    # Exclude Celery workers from endpoint-adjacent hints
+    service_no_worker = [n for n in service_like if n not in worker_like]
 
     hints: dict[str, list[str]] = {}
-    hints["add_endpoint"] = (api_like[:1] + service_like[:1] + test_like[:1]) or names[:2]
-    hints["bugfix"] = (service_like[:1] + api_like[:1] + names[:1])[:2] or names[:2]
-    hints["refactor"] = (service_like[:1] + names[:2])[:2] or names[:2]
+    hints["add_endpoint"] = (api_like[:1] + service_no_worker[:1] + test_like[:1]) or names[:2]
+    hints["bugfix"] = (service_no_worker[:1] + api_like[:1] + names[:1])[:2] or names[:2]
+    hints["refactor"] = (service_no_worker[:1] + names[:2])[:2] or names[:2]
     ui_like = [
         n for n in names
         if any(k in n.lower() for k in ("component", "ui", "view", "page", "layout", "hook", "store", "frontend", "client"))
@@ -1072,8 +1142,11 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
 
     route_mods = [m for m in sorted(modules) if "routing" in modules[m].get("r", [])]
     service_mods = [m for m in sorted(modules) if "service" in modules[m].get("r", [])]
+    worker_mods = [m for m in sorted(modules) if "worker" in modules[m].get("r", [])]
     test_mods = [m for m in sorted(modules) if "test" in modules[m].get("r", [])]
     data_mods = [m for m in sorted(modules) if "data" in modules[m].get("r", [])]
+    # Exclude worker modules from service_mods for endpoint-related tasks
+    service_mods_no_worker = [m for m in service_mods if m not in worker_mods]
     ui_mods = [
         m for m in sorted(modules)
         if any(k in m.lower() for k in ("component", "ui", "view", "page", "layout", "hook", "store", "frontend", "client"))
@@ -1097,7 +1170,7 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
                 points += 5
             if module_name in service_mods:
                 points += 2
-            for kw in ("route", "api", "endpoint", "handler", "controller", "post", "put", "patch", "delete"):
+            for kw in ("route", "api", "endpoint", "handler", "controller", "post", "put", "patch", "delete", "blueprint", "view"):
                 if kw in text:
                     points += 3
             for kw in ("create", "insert", "save", "update", "list", "get"):
@@ -1106,6 +1179,10 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
             for kw in ("file", "record", "document", "item", "entity", "crud"):
                 if kw in text:
                     points += 4
+            # Penalise workers/tasks — they are not HTTP endpoint entry points
+            for kw in ("worker", "task", "celery", "run_worker", "consumer", "make_celery"):
+                if kw in text:
+                    points -= 8
             for kw in ("auth", "signin", "signout", "logout", "login", "session", "oauth", "oidc", "token"):
                 if kw in text:
                     points -= 6
@@ -1268,21 +1345,21 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
 
     add_endpoint_hints = pick_task_hints(
         "add_endpoint",
-        route_mods + service_mods + test_mods + sorted(modules),
-        route_mods + service_mods + test_mods + sorted(modules),
+        route_mods + service_mods_no_worker + test_mods + sorted(modules),
+        route_mods + service_mods_no_worker + test_mods + sorted(modules),
         set(),
     )
     bugfix_hints = pick_task_hints(
         "bugfix",
-        service_mods + ui_mods + route_mods + test_mods + sorted(modules),
-        ui_mods + service_mods + route_mods + sorted(modules),
+        service_mods_no_worker + ui_mods + route_mods + test_mods + sorted(modules),
+        ui_mods + service_mods_no_worker + route_mods + sorted(modules),
         set(add_endpoint_hints),
         require_ui_mix=True,
     )
     refactor_hints = pick_task_hints(
         "refactor",
-        service_mods + data_mods + ui_mods + sorted(modules),
-        ui_mods + service_mods + data_mods + sorted(modules),
+        service_mods_no_worker + data_mods + ui_mods + sorted(modules),
+        ui_mods + service_mods_no_worker + data_mods + sorted(modules),
         set(add_endpoint_hints + bugfix_hints),
         require_ui_mix=True,
     )
