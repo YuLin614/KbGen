@@ -1222,6 +1222,10 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
             for kw in ("health", "ping", "flask-base", "flask_base"):
                 if kw in path:
                     points -= 10
+            # Penalise app factory, middleware, and infra files — not where endpoints live
+            for kw in ("/__init__.", "/handlers.", "/provider.", "/ses.", "/s3.", "/db."):
+                if kw in path:
+                    points -= 8
             for kw in ("route", "api", "endpoint", "handler", "controller", "post", "put", "patch", "delete", "blueprint", "view"):
                 if kw in text:
                     points += 3
