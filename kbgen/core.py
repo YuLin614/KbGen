@@ -848,7 +848,7 @@ def synthesize(scan: ScanData) -> dict[str, ModuleSynthesis]:
             anchors=scan.anchors.get(module, []),
             deps=deps,
             used_by=sorted(used_by.get(module, set())),
-            invariants=sorted(dict.fromkeys(inv))[:8],
+            invariants=sorted(dict.fromkeys(inv))[:12],
         )
     return out
 
@@ -890,6 +890,8 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     schema_hits = len(re.findall(r"schema|model|alembic|migration|dao|repository", corpus))
     delegation_hits = len(re.findall(r"is_auth_service|auth_consumer_handler|authconsumerhandlerfactory", corpus))
     http_error_hits = len(re.findall(r"unauthorizedexception|forbiddenexception|www-authenticate|www_authenticate", corpus))
+    no_api_key_hits = len(re.findall(r"jwt-only auth|api key fields removed|api key auth superseded", corpus))
+    s2s_hits = len(re.findall(r"allowed_callers|caller_azp|caller_restriction", corpus))
 
     # UUID v7 constraints and migration/install hooks.
     if uuid_hits >= 1:
@@ -935,6 +937,22 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     if dlq_hits >= 2 and replay_hits >= 1:
         invariants.append(
             f"{module}>dlq_replay_flow: dead-letter entries support controlled replay/discard recovery flows"
+        )
+
+    # API key removal (DMS-146): system uses JWT-only; no new API key auth may be added.
+    # Detected via docstring/comment text in auth_check schema or auth handler files.
+    if no_api_key_hits >= 1:
+        invariants.append(
+            f"{module}>no_api_key: authentication is JWT/OIDC only (DMS-146);"
+            f" API key support has been removed and must not be re-introduced"
+        )
+
+    # S2S caller restriction via @allowed_callers / azp JWT claim (DMS-147).
+    # Detected via caller_restriction imports or caller_azp usage.
+    if s2s_hits >= 1:
+        invariants.append(
+            f"{module}>s2s_azp_restriction: service-to-service endpoints restrict callers by azp JWT"
+            f" claim via @allowed_callers; every permitted caller must be explicitly allowlisted"
         )
 
     # Data-oriented modules typically enforce schema/model boundaries.
