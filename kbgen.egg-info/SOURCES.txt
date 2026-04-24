@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+kbgen/__init__.py
+kbgen/__main__.py
+kbgen/benchmark.py
+kbgen/cli.py
+kbgen/core.py
+kbgen.egg-info/PKG-INFO
+kbgen.egg-info/SOURCES.txt
+kbgen.egg-info/dependency_links.txt
+kbgen.egg-info/entry_points.txt
+kbgen.egg-info/top_level.txt
