@@ -1404,10 +1404,13 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
         return pick_paths(fallback_modules)
 
     non_test_mods = [m for m in sorted(modules) if "test" not in modules[m].get("r", [])]
+    routing_or_service = route_mods + [
+        m for m in service_mods_no_worker if m not in route_mods
+    ] if route_mods or service_mods_no_worker else non_test_mods
     add_endpoint_hints = pick_task_hints(
         "add_endpoint",
-        route_mods + service_mods_no_worker + non_test_mods,
-        route_mods + service_mods_no_worker + non_test_mods,
+        routing_or_service,
+        routing_or_service,
         set(),
     )
     bugfix_hints = pick_task_hints(
