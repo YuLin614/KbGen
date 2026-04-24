@@ -113,6 +113,12 @@ Recommended on Windows (auto-installs pipx and prints PATH fix commands if neede
 ./scripts/install-kbgen.ps1 -WheelPath dist/kbgen-0.1.0-py3-none-any.whl
 ```
 
+One command for build + local install + validation:
+
+```powershell
+./scripts/release-and-install.ps1 -BuildPythonExe .venv/Scripts/python.exe
+```
+
 If `kbgen` is not recognized after install, run either:
 
 - open a new PowerShell window, or
@@ -129,3 +135,4 @@ You can also use helper scripts in `scripts/`:
 
 - `scripts/build-release.ps1` builds package files and creates `release/kbgen-<version>-windows.zip`
 - `scripts/install-kbgen.ps1` installs kbgen globally with pipx and validates the command
+- `scripts/release-and-install.ps1` runs build + local install + command validation in one step
