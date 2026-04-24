@@ -854,6 +854,15 @@ def compress_file_deps(file_deps: list[tuple[str, str]], module_count: int = 1) 
 
 
 def rank_module_anchors(module: str, anchors: list[str]) -> list[str]:
+    # Deduplicate while preserving order (in case of upstream bugs).
+    seen_anchors: set[str] = set()
+    unique: list[str] = []
+    for a in anchors:
+        if a not in seen_anchors:
+            seen_anchors.add(a)
+            unique.append(a)
+    anchors = unique
+
     if not anchors:
         return []
 
@@ -991,11 +1000,20 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
         avoid: set[str],
         limit: int = 3,
     ) -> list[str]:
+        # Normalize avoid: extract bare paths from anchor strings so bare-path
+        # comparison works even when avoid contains symbol@path:line entries.
+        avoid_paths: set[str] = set()
+        for entry in avoid:
+            if "@" in entry:
+                _, rest = entry.split("@", 1)
+                avoid_paths.add(rest.rsplit(":", 1)[0] if ":" in rest else rest)
+            else:
+                avoid_paths.add(entry)
         candidates: list[tuple[int, int, str]] = []
         seen: set[str] = set()
         for mod in module_names:
             for path in modules.get(mod, {}).get("p", []):
-                if path in seen or path in avoid:
+                if path in seen or path in avoid_paths:
                     continue
                 seen.add(path)
                 lower = path.lower()
