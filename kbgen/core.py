@@ -267,6 +267,42 @@ def structural_scan(root: Path) -> ScanData:
     route_entries: set[str] = set()
     auth_markers: set[str] = set()
 
+    # Build Python package-name → module-directory mapping from setup.py / pyproject.toml.
+    # Enables resolving cross-service imports like `from dems_common.x import y` → module 'common'.
+    pkg_to_module: dict[str, str] = {}
+    for setup_file in root.rglob("setup.py"):
+        if any(part in IGNORED_DIR_NAMES for part in setup_file.parts):
+            continue
+        try:
+            setup_text = setup_file.read_text(encoding="utf-8", errors="ignore")
+            for m in re.finditer(r"name\s*=\s*['\"]([^'\"]+)['\"]", setup_text):
+                pkg_name = m.group(1).replace("-", "_")
+                mod = module_for_path(setup_file, root)
+                pkg_to_module[pkg_name] = mod
+                break
+        except Exception:
+            pass
+    for toml_file in root.rglob("pyproject.toml"):
+        if any(part in IGNORED_DIR_NAMES for part in toml_file.parts):
+            continue
+        try:
+            toml_text = toml_file.read_text(encoding="utf-8", errors="ignore")
+            for m in re.finditer(r'^name\s*=\s*["\']([^"\']+)["\']', toml_text, flags=re.MULTILINE):
+                pkg_name = m.group(1).replace("-", "_")
+                mod = module_for_path(toml_file, root)
+                pkg_to_module[pkg_name] = mod
+                break
+        except Exception:
+            pass
+    # Also detect installable packages by __init__.py inside top-level service dirs.
+    for mod_name, mod_files in modules.items():
+        for f in mod_files:
+            if f.name == "__init__.py":
+                # e.g. common/dems_common/__init__.py → pkg 'dems_common' → module 'common'
+                pkg_candidate = f.parent.name
+                if pkg_candidate not in module_names and pkg_candidate not in pkg_to_module:
+                    pkg_to_module[pkg_candidate] = mod_name
+
     for module, module_files in modules.items():
         exp_names: set[str] = set()
         exp_anchors: set[str] = set()
@@ -286,7 +322,9 @@ def structural_scan(root: Path) -> ScanData:
                 entry_modules.add(module)
 
             for candidate in parse_import_candidates(text, file.suffix.lower()):
-                resolved_module, resolved_path = resolve_import_target(candidate, file, root, module_names)
+                resolved_module, resolved_path = resolve_import_target(
+                    candidate, file, root, module_names, pkg_to_module
+                )
                 if resolved_module and resolved_module != module:
                     deps[module].add(resolved_module)
                 if resolved_path is not None:
@@ -423,6 +461,7 @@ def resolve_import_target(
     file: Path,
     root: Path,
     module_names: set[str],
+    pkg_to_module: dict[str, str] | None = None,
 ) -> tuple[str | None, Path | None]:
     candidate = candidate.strip()
     if not candidate:
@@ -453,6 +492,11 @@ def resolve_import_target(
             return (module if module in module_names else None), resolved
 
     head = candidate.split("/")[0].split(".")[0]
+    # Python: check package-name → module-directory mapping (e.g. dems_common → common).
+    if pkg_to_module and head in pkg_to_module:
+        target_module = pkg_to_module[head]
+        if target_module in module_names:
+            return target_module, None
     if head in module_names:
         resolved = resolve_absolute_like_import(root, candidate)
         if resolved is not None:
@@ -1174,6 +1218,10 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
             for kw in ("controller", "blueprint", "views", "/api/", "router"):
                 if kw in path:
                     points += 6
+            # Penalise health checks, base templates, and generic infra files
+            for kw in ("health", "ping", "flask-base", "flask_base"):
+                if kw in path:
+                    points -= 10
             for kw in ("route", "api", "endpoint", "handler", "controller", "post", "put", "patch", "delete", "blueprint", "view"):
                 if kw in text:
                     points += 3
