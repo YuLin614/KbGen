@@ -1170,6 +1170,10 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
                 points += 5
             if module_name in service_mods:
                 points += 2
+            # Path-based boost: controller/blueprint files are primary HTTP entry points
+            for kw in ("controller", "blueprint", "views", "/api/", "router"):
+                if kw in path:
+                    points += 6
             for kw in ("route", "api", "endpoint", "handler", "controller", "post", "put", "patch", "delete", "blueprint", "view"):
                 if kw in text:
                     points += 3
@@ -1183,6 +1187,10 @@ def build_file_hints(modules: dict[str, Any], path_to_best_anchor: dict[str, str
             for kw in ("worker", "task", "celery", "run_worker", "consumer", "make_celery"):
                 if kw in text:
                     points -= 8
+            # Penalise DB/infra files — not where you define endpoints
+            for kw in ("/db.", "/s3.", "/models.", "/migration", "/alembic", "/schema.", "setup_db", "setup_s3"):
+                if kw in path:
+                    points -= 10
             for kw in ("auth", "signin", "signout", "logout", "login", "session", "oauth", "oidc", "token"):
                 if kw in text:
                     points -= 6
