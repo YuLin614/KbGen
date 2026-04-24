@@ -889,6 +889,7 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     replay_hits = len(re.findall(r"replay|discard|bulk-replay|metrics", corpus))
     schema_hits = len(re.findall(r"schema|model|alembic|migration|dao|repository", corpus))
     delegation_hits = len(re.findall(r"is_auth_service|auth_consumer_handler|authconsumerhandlerfactory", corpus))
+    http_error_hits = len(re.findall(r"unauthorizedexception|forbiddenexception|www-authenticate|www_authenticate", corpus))
 
     # UUID v7 constraints and migration/install hooks.
     if uuid_hits >= 1:
@@ -920,6 +921,14 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
         invariants.append(
             f"{module}>auth_check_delegation: non-auth services delegate all authorization to"
             f" auth-service via POST /api/v1/auth/check; never re-validate JWT locally"
+        )
+
+    # RFC 9110 HTTP error contract: 401 = unauthenticated (with WWW-Authenticate), 403 = unauthorized.
+    # Detected via UnauthorizedException/ForbiddenException/WWW-Authenticate usage.
+    if http_error_hits >= 2:
+        invariants.append(
+            f"{module}>http_error_contract: 401 means unauthenticated (missing/invalid token, includes"
+            f" WWW-Authenticate header); 403 means authenticated but forbidden; never swap them"
         )
 
     # DLQ replay/discard semantics.
@@ -1143,7 +1152,7 @@ def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str
         audit_hits = names.count("audit")
         # Keep auth facet strict to avoid false positives from shared auth helpers.
         if "auth" in lower or "auth" in role:
-            facets.append("auth and identity")
+            facets.append("auth and identity — central authorization authority for all services")
         if "audit" in lower or audit_hits >= 2:
             facets.append("audit logging")
         if "record" in lower or "record" in names or "file" in names:
