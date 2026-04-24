@@ -1,0 +1,25 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Packaging/build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Local AI generated artifacts
+.ai/
+
+# Release bundles
+release/*.zip
+release/*/*.whl
+release/*/*.tar.gz
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
