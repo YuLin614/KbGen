@@ -892,6 +892,12 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     http_error_hits = len(re.findall(r"unauthorizedexception|forbiddenexception|www-authenticate|www_authenticate", corpus))
     no_api_key_hits = len(re.findall(r"jwt-only auth|api key fields removed|api key auth superseded", corpus))
     s2s_hits = len(re.findall(r"allowed_callers|caller_azp|caller_restriction", corpus))
+    pii_crypto_hits = len(
+        re.findall(
+            r"fernet|encrypt_data_bulk|encrypted_fields|filename_hash|email_hash|blind index|reencrypt|pii",
+            corpus,
+        )
+    )
 
     # UUID v7 constraints and migration/install hooks.
     if uuid_hits >= 1:
@@ -959,6 +965,14 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
         invariants.append(
             f"{module}>s2s_azp_restriction: service-to-service endpoints restrict callers by azp JWT"
             f" claim via @allowed_callers; every permitted caller must be explicitly allowlisted"
+        )
+
+    # PII-at-rest encryption: auth/record domains store sensitive fields encrypted with Fernet key chains.
+    pii_owner = ("auth" in module_lower) or ("record" in module_lower) or ("common" in module_lower)
+    if pii_owner and pii_crypto_hits >= 3:
+        invariants.append(
+            f"{module}>pii_fernet_encryption: PII fields (for example user name/email and file"
+            f" filename) are stored encrypted with Fernet key chains and blind-index lookups"
         )
 
     # Data-oriented modules typically enforce schema/model boundaries.
