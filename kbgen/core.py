@@ -359,6 +359,14 @@ def extract_export_anchors(path: Path, text: str, root: Path) -> list[str]:
         for m in re.finditer(r"^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[:\(]", text, flags=re.MULTILINE):
             line = text.count("\n", 0, m.start()) + 1
             anchors.add(f"{m.group(1)}@{rel}:{line}")
+        # Capture module-level endpoint router/blueprint objects.
+        for m in re.finditer(
+            r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:Blueprint|APIRouter|Router)\s*\(",
+            text,
+            flags=re.MULTILINE,
+        ):
+            line = text.count("\n", 0, m.start()) + 1
+            anchors.add(f"{m.group(1)}@{rel}:{line}")
     elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
         # Track seen symbols to handle TS function overloads — keep first occurrence only.
         seen_symbols: set[str] = set()
