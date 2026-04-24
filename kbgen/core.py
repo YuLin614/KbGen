@@ -15,6 +15,7 @@ DEFAULT_KEY_PATH_LIMIT = 0
 SOFT_TOKEN_TARGET = 12000
 SOFT_TOKEN_MAX = 22000
 ROUTE_INDEX_LIMIT = 200
+BLUEPRINT_PREFIX_CACHE: dict[str, dict[str, str]] = {}
 
 SCHEMA_TEXT = """Keys:
 m = modules
@@ -533,6 +534,77 @@ def resolve_absolute_like_import(root: Path, target: str) -> Path | None:
     return None
 
 
+def _join_route(prefix: str, route_path: str) -> str:
+    p = (prefix or "").strip()
+    r = (route_path or "").strip()
+    if not p:
+        return r or "/"
+    if not r:
+        return p or "/"
+    left = p[:-1] if p.endswith("/") else p
+    right = r if r.startswith("/") else ("/" + r)
+    out = left + right
+    return out or "/"
+
+
+def _resolve_blueprint_prefixes(blueprints_text: str) -> dict[str, str]:
+    own_prefix: dict[str, str] = {}
+    parent_edge: dict[str, tuple[str, str]] = {}
+
+    bp_decl = re.compile(
+        r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*Blueprint\([^\n]*?url_prefix\s*=\s*['\"]([^'\"]*)['\"]",
+        flags=re.MULTILINE,
+    )
+    register_decl = re.compile(
+        r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\.register_blueprint\(\s*([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+        flags=re.MULTILINE,
+    )
+
+    for m in bp_decl.finditer(blueprints_text):
+        own_prefix[m.group(1)] = m.group(2)
+
+    for m in register_decl.finditer(blueprints_text):
+        parent = m.group(1)
+        child = m.group(2)
+        extra_prefix = m.group(3) or ""
+        if child not in parent_edge:
+            parent_edge[child] = (parent, extra_prefix)
+
+    memo: dict[str, str] = {}
+
+    def full_prefix(name: str, visiting: set[str]) -> str:
+        if name in memo:
+            return memo[name]
+        if name in visiting:
+            return own_prefix.get(name, "")
+        visiting.add(name)
+        base = own_prefix.get(name, "")
+        parent_info = parent_edge.get(name)
+        if parent_info is None:
+            memo[name] = base
+            visiting.remove(name)
+            return memo[name]
+        parent_name, extra = parent_info
+        parent_full = full_prefix(parent_name, visiting)
+        combined = _join_route(_join_route(parent_full, extra), base)
+        memo[name] = combined
+        visiting.remove(name)
+        return combined
+
+    all_names = set(own_prefix) | set(parent_edge)
+    return {name: full_prefix(name, set()) for name in all_names}
+
+
+def _nearest_blueprints_file(path: Path, root: Path) -> Path | None:
+    for parent in [path.parent, *path.parents]:
+        if root not in parent.parents and parent != root:
+            continue
+        candidate = parent / "blueprints.py"
+        if candidate.exists() and candidate.is_file() and root in candidate.parents:
+            return candidate
+    return None
+
+
 def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
     suffix = path.suffix.lower()
     rel = path.relative_to(root).as_posix()
@@ -545,25 +617,42 @@ def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
     # --- Python: Flask / FastAPI / Django routes ---
     if suffix == ".py":
         entries: list[str] = []
+        bp_prefixes: dict[str, str] = {}
+
+        blueprints_file = _nearest_blueprints_file(path, root)
+        if blueprints_file is not None:
+            cache_key = str(blueprints_file)
+            if cache_key not in BLUEPRINT_PREFIX_CACHE:
+                try:
+                    bp_text = blueprints_file.read_text(encoding="utf-8", errors="ignore")
+                    BLUEPRINT_PREFIX_CACHE[cache_key] = _resolve_blueprint_prefixes(bp_text)
+                except Exception:
+                    BLUEPRINT_PREFIX_CACHE[cache_key] = {}
+            bp_prefixes = BLUEPRINT_PREFIX_CACHE.get(cache_key, {})
+
+        def with_prefix(decorator_obj: str, route_path: str) -> str:
+            obj = decorator_obj.split(".")[-1].strip()
+            return _join_route(bp_prefixes.get(obj, ""), route_path)
+
         # Flask: @bp.route('/path', methods=[...]) or @app.route(...)
         flask_pattern = re.compile(
-            r"@[\w\.]+\.route\(['\"]([^'\"]+)['\"](?:[^)]*methods\s*=\s*\[([^\]]+)\])?",
+            r"@([\w\.]+)\.route\(['\"]([^'\"]*)['\"](?:[^)]*methods\s*=\s*\[([^\]]+)\])?",
         )
         for m in flask_pattern.finditer(text):
-            route_path = m.group(1)
-            methods_raw = m.group(2) or "GET"
+            route_path = with_prefix(m.group(1), m.group(2))
+            methods_raw = m.group(3) or "GET"
             methods = re.findall(r"['\"]([A-Z]+)['\"]", methods_raw) or ["GET"]
             line = text.count("\n", 0, m.start()) + 1
             method_str = "|".join(sorted(methods))
             entries.append(f"api:{route_path}[{method_str}]->{rel}:{line}")
         # FastAPI: @router.get('/path') / @app.post(...) etc.
         fastapi_pattern = re.compile(
-            r"@[\w\.]+\.(get|post|put|patch|delete|options|head)\(['\"]([^'\"]+)['\"]",
+            r"@([\w\.]+)\.(get|post|put|patch|delete|options|head)\(['\"]([^'\"]*)['\"]",
             re.IGNORECASE,
         )
         for m in fastapi_pattern.finditer(text):
-            method = m.group(1).upper()
-            route_path = m.group(2)
+            method = m.group(2).upper()
+            route_path = with_prefix(m.group(1), m.group(3))
             line = text.count("\n", 0, m.start()) + 1
             entries.append(f"api:{route_path}[{method}]->{rel}:{line}")
         # Django: path('route/', view) / re_path
