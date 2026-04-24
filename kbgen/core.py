@@ -715,7 +715,10 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
             return "EP_NAV"
 
         if task == "ui_feature":
-            if any(k in lower for k in ("component", "view", "table", "panel", "dialog", "layout", "page", "feature")):
+            # App routes (Next.js pages/layouts) represent interaction flow
+            if lower.startswith("app/") or "/page." in lower or "/layout." in lower:
+                return "UI_FLOW"
+            if any(k in lower for k in ("component", "view", "table", "panel", "dialog", "feature", "toolbar", "column")):
                 return "UI_ENTRY"
             if any(k in lower for k in ("hook", "store", "state", "zustand", "use")):
                 return "UI_STATE"
@@ -731,7 +734,10 @@ def build_hint_rationales(file_hints: dict[str, list[str]]) -> dict[str, list[di
         if task == "ui_bugfix":
             if any(k in lower for k in ("test", "spec", "assert")):
                 return "BUG_REPRO"
-            if any(k in lower for k in ("component", "view", "table", "panel", "dialog", "form", "layout", "page")):
+            # App routes represent interaction flow
+            if lower.startswith("app/") or "/page." in lower or "/layout." in lower:
+                return "UI_FLOW"
+            if any(k in lower for k in ("component", "view", "table", "panel", "dialog", "form")):
                 return "UI_ENTRY"
             if any(k in lower for k in ("hook", "store", "state", "zustand", "use")):
                 return "UI_STATE"
@@ -883,13 +889,12 @@ def rank_module_anchors(module: str, anchors: list[str]) -> list[str]:
 
     ranked = sorted(anchors, key=score)
 
-    # In component-heavy repos, keep anchors focused on feature/business components
-    # when enough non-primitive anchors are available.
+    # In component-heavy repos, keep anchors focused on feature/business components.
+    # Drop shadcn primitives entirely when enough non-primitive anchors are available.
     if module == "components":
         business = [anchor for anchor in ranked if not is_ui_primitive_anchor(anchor)]
         if len(business) >= 4:
-            ui_primitives = [anchor for anchor in ranked if is_ui_primitive_anchor(anchor)]
-            return business + ui_primitives
+            return business  # drop shadcn primitives entirely
 
     return ranked
 
@@ -986,7 +991,7 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
                 candidates.append((points, -len(path), path))
 
         candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
-        return [path for _, _, path in candidates[:limit]]
+        return [best_anchor_for_path(path) for _, _, path in candidates[:limit]]
 
     def merge_targets(primary: list[str], supplement: list[str], limit: int = 3) -> list[str]:
         out_targets: list[str] = []
@@ -997,6 +1002,25 @@ def build_file_hints(modules: dict[str, Any]) -> dict[str, list[str]]:
             if len(out_targets) >= limit:
                 break
         return out_targets
+
+    def best_anchor_for_path(path: str) -> str:
+        """Upgrade a bare path to its best anchor (symbol@path:line) if one exists."""
+        candidates: list[tuple[int, str]] = []
+        for mod_data in modules.values():
+            for anchor in mod_data.get("a", []):
+                if "@" not in anchor:
+                    continue
+                sym, rest = anchor.split("@", 1)
+                anchor_path = rest.rsplit(":", 1)[0] if ":" in rest else rest
+                if anchor_path != path:
+                    continue
+                # Prefer PascalCase component names (React components)
+                score = 2 if (sym and sym[0].isupper()) else 1
+                candidates.append((score, anchor))
+        if candidates:
+            candidates.sort(key=lambda x: (-x[0], x[1]))
+            return candidates[0][1]
+        return path
 
     route_mods = [m for m in sorted(modules) if "routing" in modules[m].get("r", [])]
     service_mods = [m for m in sorted(modules) if "service" in modules[m].get("r", [])]
