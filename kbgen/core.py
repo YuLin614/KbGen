@@ -309,17 +309,25 @@ def extract_export_anchors(path: Path, text: str, root: Path) -> list[str]:
             line = text.count("\n", 0, m.start()) + 1
             anchors.add(f"{m.group(1)}@{rel}:{line}")
     elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+        # Track seen symbols to handle TS function overloads — keep first occurrence only.
+        seen_symbols: set[str] = set()
+
+        def add_anchor(symbol: str, line: int) -> None:
+            if symbol not in seen_symbols:
+                seen_symbols.add(symbol)
+                anchors.add(f"{symbol}@{rel}:{line}")
+
         pattern = r"export\s+(?:async\s+)?(?:function|class|const|let|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)"
         for m in re.finditer(pattern, text):
             line = text.count("\n", 0, m.start()) + 1
-            anchors.add(f"{m.group(1)}@{rel}:{line}")
+            add_anchor(m.group(1), line)
 
         for m in re.finditer(
             r"export\s+default\s+(?:async\s+)?(?:function|class)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
             text,
         ):
             line = text.count("\n", 0, m.start()) + 1
-            anchors.add(f"{m.group(1)}@{rel}:{line}")
+            add_anchor(m.group(1), line)
 
         # export default Component;
         for m in re.finditer(r"export\s+default\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;", text):
@@ -327,18 +335,18 @@ def extract_export_anchors(path: Path, text: str, root: Path) -> list[str]:
             decl = _find_js_symbol_declaration(text, symbol)
             pos = decl if decl >= 0 else m.start()
             line = text.count("\n", 0, pos) + 1
-            anchors.add(f"{symbol}@{rel}:{line}")
+            add_anchor(symbol, line)
 
         # export default function (...) { ... }
         for m in re.finditer(r"export\s+default\s+(?:async\s+)?function\s*\(", text):
             line = text.count("\n", 0, m.start()) + 1
-            anchors.add(f"default@{rel}:{line}")
+            add_anchor("default", line)
 
         # Fallback for component-heavy files that often omit explicit exports.
         if not anchors:
             for symbol, pos in _find_component_like_symbols(text):
                 line = text.count("\n", 0, pos) + 1
-                anchors.add(f"{symbol}@{rel}:{line}")
+                add_anchor(symbol, line)
                 if len(anchors) >= 6:
                     break
 
