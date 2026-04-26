@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from kbgen.benchmark import benchmark, format_markdown_report
+from kbgen.claude_wrapper import run_claude_with_proxy
 from kbgen.core import full_scan, incremental_update, init_artifacts
 
 
@@ -60,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.05,
         help="Maximum allowed success-rate drop (default: 0.05)",
     )
+    claude_parser = sub.add_parser("claude", help="Run claude CLI with token usage tracking")
+    claude_parser.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded verbatim to the claude CLI",
+    )
     return parser
 
 
@@ -106,6 +113,12 @@ def main(argv: list[str] | None = None) -> int:
             result["json_report"] = str(output_path)
         print(json.dumps({"status": "ok", **result}, indent=2))
         return 0
+
+    if args.command == "claude":
+        claude_args = list(args.args)
+        if claude_args and claude_args[0] == "--":
+            claude_args = claude_args[1:]
+        return run_claude_with_proxy(claude_args)
 
     print(f"unknown command: {args.command}", file=sys.stderr)
     return 2
