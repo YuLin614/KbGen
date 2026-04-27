@@ -2,6 +2,36 @@
 
 `kbgen` is a CLI that generates an offline semantic snapshot for codebase exploration.
 
+## Installation
+
+```powershell
+winget install astral-sh.uv   # skip if uv already installed
+uv tool install git+https://github.com/YuLin614/KbGen.git
+```
+
+Installs both `kbgen` and `kbclaude` executables. If `uv` is not available via winget, get it from [docs.astral.sh/uv](https://docs.astral.sh/uv).
+
+## CLAUDE.md Setup
+
+After installing, add the following to your project's `CLAUDE.md` so Claude knows to use the snapshot:
+
+```markdown
+## Codebase Snapshot
+
+A semantic snapshot is available at `.ai/snapshot.kb`. Read it at the start of every session before exploring any files.
+
+To regenerate after significant changes:
+- Full scan: `kbgen scan`
+- Incremental update: `kbgen update`
+```
+
+Then generate the snapshot once:
+
+```bash
+kbgen init
+kbgen scan
+```
+
 ## Commands
 
 - `kbgen init` - create `.ai/` and default artifacts
@@ -136,15 +166,6 @@ This creates:
 
 - `dist/kbgen-<version>-py3-none-any.whl`
 - `dist/kbgen-<version>.tar.gz`
-
-Install directly from GitHub (recommended):
-
-```powershell
-winget install astral-sh.uv   # skip if uv already installed
-uv tool install git+https://github.com/YuLin614/KbGen.git
-```
-
-This installs both `kbgen` and `kbclaude` executables. No clone or wheel file needed. If `uv` is not available via winget, get it from [docs.astral.sh/uv](https://docs.astral.sh/uv).
 
 Alternatively, install from a wheel file:
 
