@@ -8,6 +8,7 @@
 - `kbgen scan` - full cold-start generation
 - `kbgen update` - incremental update based on git changes
 - `kbgen benchmark` - compare baseline vs snapshot run logs
+- `kbclaude` - run Claude CLI with Anthropic token usage tracking (also available as `kbgen claude`)
 
 Tune file-path granularity in snapshot:
 
@@ -33,6 +34,44 @@ Notes:
 - `fd` (file dependency digest) now scales with repository size instead of being fixed to a hard 24-entry cap.
 - `cy` lists detected mutual module dependency cycles (e.g., `app<->components`) to highlight architecture hot spots.
 - `hr` is a machine-readable read plan aligned with `hf` (`s`=step, `t`=target, `r`=reason code) for agent-first navigation.
+
+## Token Usage Tracking
+
+`kbclaude` is a drop-in wrapper for the Claude CLI that intercepts every Anthropic API call and prints a token usage summary when the session ends.
+
+```bash
+kbclaude                        # launch Claude CLI with tracking
+kbclaude --model sonnet-4-5     # flags forwarded verbatim
+kbgen claude                    # same, via kbgen subcommand
+```
+
+Requires [Claude Code CLI](https://claude.ai/code) to be installed and available on `PATH`.
+
+How it works: a local HTTP proxy starts on `localhost:<random port>`. The environment variable `ANTHROPIC_BASE_URL` is set to point Claude CLI at the proxy. The proxy intercepts all API calls, parses token usage from both streaming (SSE) and non-streaming responses, accumulates totals, then shuts down when Claude CLI exits.
+
+On exit:
+
+```
+--- kbclaude session summary ---
+  Requests          : 8
+  Input tokens      : 56  (uncached)
+  Cache write tokens: 71,570
+  Cache read tokens : 455,920
+  Total input       : 527,546  (uncached + cache_write + cache_read)
+  Output tokens     : 1,618
+  Duration          : 866.1s
+--------------------------------
+```
+
+Field notes:
+
+- **Input tokens** — tokens sent that were not served from cache
+- **Cache write tokens** — tokens written to prompt cache this session (billed at ~1.25x)
+- **Cache read tokens** — tokens served from existing cache (billed at ~0.1x, much cheaper)
+- **Total input** — full context processed on the input side
+- **Output tokens** — tokens Claude generated; this is the most expensive category (~5x input rate) and the best indicator of how much work Claude actually did
+
+Output tokens are the primary metric for evaluating whether `kbgen scan` snapshot is helping: fewer output tokens means Claude spent less time exploring the codebase.
 
 ## Benchmark
 
@@ -98,7 +137,17 @@ This creates:
 - `dist/kbgen-<version>-py3-none-any.whl`
 - `dist/kbgen-<version>.tar.gz`
 
-Install on a teammate machine with pipx (recommended):
+Install on a teammate machine with `uv` (recommended):
+
+```powershell
+uv tool install path/to/kbgen-0.1.0-py3-none-any.whl
+kbgen --help
+kbclaude --help
+```
+
+`uv` installs both `kbgen` and `kbclaude` executables. If `uv` is not installed, get it from [docs.astral.sh/uv](https://docs.astral.sh/uv).
+
+Alternatively with pipx:
 
 ```powershell
 py -m pip install --user pipx
