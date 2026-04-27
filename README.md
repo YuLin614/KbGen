@@ -16,10 +16,9 @@ Installs both `kbgen` and `kbclaude` executables. If `uv` is not available via w
 After installing, add the following to your project's `CLAUDE.md` so Claude knows to use the snapshot:
 
 ```markdown
-## Codebase Snapshot
+## Codebase navigation
 
-A semantic snapshot is available at `.ai/snapshot.kb`. Read it at the start of every session before exploring any files.
-
+At the start of a new feature development session, read `.ai/snapshot.kb` (schema: `.ai/schema.kb`) once before writing any code. Use it for navigation only — finding file locations, not understanding logic. Key fields: `a` (symbol→file:line), `p` (file inventory per module), `ri` (route→file mapping), `hf`/`hr` (task entry points by type), `fd` (file dependency edges). If a path from snapshot is not found on disk, fall back to `Glob` — snapshot may be stale mid-session.
 ```
 
 Then generate the snapshot once:
