@@ -137,15 +137,20 @@ This creates:
 - `dist/kbgen-<version>-py3-none-any.whl`
 - `dist/kbgen-<version>.tar.gz`
 
-Install on a teammate machine with `uv` (recommended):
+Install directly from GitHub (recommended):
+
+```powershell
+winget install astral-sh.uv   # skip if uv already installed
+uv tool install git+https://github.com/YuLin614/KbGen.git
+```
+
+This installs both `kbgen` and `kbclaude` executables. No clone or wheel file needed. If `uv` is not available via winget, get it from [docs.astral.sh/uv](https://docs.astral.sh/uv).
+
+Alternatively, install from a wheel file:
 
 ```powershell
 uv tool install path/to/kbgen-0.1.0-py3-none-any.whl
-kbgen --help
-kbclaude --help
 ```
-
-`uv` installs both `kbgen` and `kbclaude` executables. If `uv` is not installed, get it from [docs.astral.sh/uv](https://docs.astral.sh/uv).
 
 Alternatively with pipx:
 
