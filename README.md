@@ -20,9 +20,6 @@ After installing, add the following to your project's `CLAUDE.md` so Claude know
 
 A semantic snapshot is available at `.ai/snapshot.kb`. Read it at the start of every session before exploring any files.
 
-To regenerate after significant changes:
-- Full scan: `kbgen scan`
-- Incremental update: `kbgen update`
 ```
 
 Then generate the snapshot once:
