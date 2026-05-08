@@ -111,6 +111,20 @@ Field notes:
 
 Output tokens are the primary metric for evaluating whether `kbgen scan` snapshot is helping: fewer output tokens means Claude spent less time exploring the codebase.
 
+Optional budget tracking (estimated USD):
+
+```powershell
+$env:KBGEN_BUDGET_USD = "50"      # total budget
+$env:KBGEN_BUDGET_PERSIST = "1"   # default: 1 (persist across sessions)
+kbclaude
+```
+
+Notes:
+
+- Budget tracking is estimate-only (based on token usage + model pricing table).
+- Persistent totals are stored at `~/.kbgen/budget.json`.
+- Set `KBGEN_BUDGET_PERSIST=0` for per-session reset behavior.
+
 ## Benchmark
 
 Use A/B experiment logs to evaluate whether snapshot usage reduces token cost without hurting quality.

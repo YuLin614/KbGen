@@ -60,6 +60,10 @@ def show_gain(n_recent: int = 10, show_history: bool = False) -> None:
     if snap_sessions and no_snap_sessions:
         avg_input_snap = sum(_total_input(s) for s in snap_sessions) / len(snap_sessions)
         avg_input_nosnap = sum(_total_input(s) for s in no_snap_sessions) / len(no_snap_sessions)
+        avg_saved_tokens = avg_input_nosnap - avg_input_snap
+        total_input_snap = sum(_total_input(s) for s in snap_sessions)
+        total_input_nosnap = sum(_total_input(s) for s in no_snap_sessions)
+        total_saved_tokens = total_input_nosnap - total_input_snap
         if avg_input_nosnap > 0:
             savings_pct = (1 - avg_input_snap / avg_input_nosnap) * 100
             direction = "fewer" if savings_pct >= 0 else "more"
@@ -67,6 +71,14 @@ def show_gain(n_recent: int = 10, show_history: bool = False) -> None:
             print(f"  avg total input  with snapshot : {_fmt_num(int(avg_input_snap))} tokens")
             print(f"  avg total input  no  snapshot  : {_fmt_num(int(avg_input_nosnap))} tokens")
             print(f"  estimated savings               : {abs(savings_pct):.0f}% {direction} tokens")
+            if avg_saved_tokens >= 0:
+                print(f"  avg tokens saved per session    : {_fmt_num(int(avg_saved_tokens))} tokens")
+            else:
+                print(f"  avg extra tokens per session    : {_fmt_num(int(abs(avg_saved_tokens)))} tokens")
+            if total_saved_tokens >= 0:
+                print(f"  total tokens saved              : {_fmt_num(int(total_saved_tokens))} tokens")
+            else:
+                print(f"  total extra tokens              : {_fmt_num(int(abs(total_saved_tokens)))} tokens")
             print()
     elif snap_sessions:
         print(f"All {len(snap_sessions)} session(s) used a snapshot. Run without snapshot to see comparison.")
