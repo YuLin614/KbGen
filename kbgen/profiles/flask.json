@@ -1,0 +1,23 @@
+{
+  "name": "flask",
+  "entry_points": ["app.py", "wsgi.py", "run.py"],
+  "ignore_dirs": [],
+  "role_map": {
+    "blueprints": "routing",
+    "views": "routing",
+    "routes": "routing",
+    "models": "data",
+    "repositories": "data",
+    "services": "service",
+    "middleware": "service",
+    "extensions": "service",
+    "tasks": "worker",
+    "celery": "worker"
+  },
+  "summaries": {
+    "blueprints": "Flask Blueprint route definitions and HTTP handlers.",
+    "extensions": "Flask extension initialization and configuration.",
+    "middleware": "WSGI middleware and request/response hooks."
+  },
+  "invariants": []
+}

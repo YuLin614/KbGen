@@ -1,0 +1,25 @@
+{
+  "name": "express",
+  "entry_points": ["index.js", "index.ts", "server.js", "server.ts", "app.js", "app.ts"],
+  "ignore_dirs": [],
+  "role_map": {
+    "routes": "routing",
+    "controllers": "routing",
+    "handlers": "routing",
+    "middleware": "service",
+    "middlewares": "service",
+    "models": "data",
+    "repositories": "data",
+    "services": "service",
+    "utils": "service",
+    "helpers": "service",
+    "config": "service"
+  },
+  "summaries": {
+    "routes": "Express route definitions and HTTP endpoint handlers.",
+    "controllers": "Request handlers and business logic coordination.",
+    "middleware": "Express middleware for auth, logging, and request processing.",
+    "services": "Business logic and external service integrations."
+  },
+  "invariants": []
+}

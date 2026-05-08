@@ -1,0 +1,44 @@
+{
+  "name": "nextjs",
+  "entry_points": ["app/layout.tsx", "app/layout.js", "app/page.tsx", "app/page.js"],
+  "ignore_dirs": [".next"],
+  "role_map": {
+    "app": "routing",
+    "pages": "routing",
+    "components": "ui",
+    "hooks": "service",
+    "lib": "service",
+    "utils": "service",
+    "store": "service",
+    "context": "service",
+    "providers": "service",
+    "styles": "ui",
+    "public": "ui",
+    "api": "routing",
+    "middleware": "service",
+    "types": "service",
+    "server": "service",
+    "actions": "service"
+  },
+  "summaries": {
+    "app": "Next.js App Router pages, layouts, and API routes.",
+    "pages": "Next.js Pages Router entry points and API handlers.",
+    "components": "Reusable React components and UI primitives.",
+    "hooks": "Custom React hooks for state and side effects.",
+    "store": "Client-side state management.",
+    "providers": "React context providers and global state wrappers.",
+    "middleware": "Next.js edge middleware for request handling.",
+    "actions": "Next.js Server Actions for server-side mutations."
+  },
+  "invariants": [
+    {
+      "name": "server_component_default",
+      "pattern": "\"use client\"|'use client'",
+      "description": "components are Server Components by default; 'use client' required for browser APIs/hooks",
+      "min_hits": 1,
+      "roles": ["routing", "ui"],
+      "module_contains": "",
+      "not_module_contains": ""
+    }
+  ]
+}

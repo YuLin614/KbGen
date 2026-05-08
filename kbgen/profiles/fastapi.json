@@ -1,0 +1,46 @@
+{
+  "name": "fastapi",
+  "entry_points": ["main.py", "app.py", "server.py"],
+  "ignore_dirs": [],
+  "role_map": {
+    "routers": "routing",
+    "routes": "routing",
+    "endpoints": "routing",
+    "schemas": "service",
+    "dependencies": "service",
+    "deps": "service",
+    "crud": "data",
+    "database": "data",
+    "db": "data",
+    "repositories": "data",
+    "middleware": "service",
+    "core": "service"
+  },
+  "summaries": {
+    "routers": "FastAPI routers and HTTP endpoint definitions.",
+    "schemas": "Pydantic schemas for request/response validation.",
+    "dependencies": "FastAPI dependency injection functions.",
+    "crud": "Database CRUD operations and data access layer.",
+    "middleware": "FastAPI middleware for request processing."
+  },
+  "invariants": [
+    {
+      "name": "pydantic_validation",
+      "pattern": "BaseModel|pydantic|@validator|@field_validator",
+      "description": "request/response models use Pydantic for validation and serialization",
+      "min_hits": 2,
+      "roles": ["routing", "service"],
+      "module_contains": "",
+      "not_module_contains": ""
+    },
+    {
+      "name": "async_endpoints",
+      "pattern": "async def|await ",
+      "description": "route handlers are async; use async-compatible libraries",
+      "min_hits": 3,
+      "roles": ["routing"],
+      "module_contains": "",
+      "not_module_contains": ""
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "name": "django",
+  "entry_points": ["manage.py", "wsgi.py", "asgi.py"],
+  "ignore_dirs": [],
+  "role_map": {
+    "views": "routing",
+    "urls": "routing",
+    "forms": "routing",
+    "admin": "routing",
+    "models": "data",
+    "managers": "data",
+    "migrations": "data",
+    "signals": "worker",
+    "tasks": "worker",
+    "serializers": "service",
+    "templatetags": "service",
+    "middleware": "service",
+    "permissions": "auth",
+    "authentication": "auth"
+  },
+  "summaries": {
+    "views": "Django view handlers and request dispatch.",
+    "urls": "URL routing patterns and path configuration.",
+    "serializers": "DRF serializers for request/response validation.",
+    "admin": "Django admin site customizations.",
+    "signals": "Django signal handlers for event-driven side effects.",
+    "middleware": "Django middleware for request/response processing.",
+    "migrations": "Database migration scripts and schema version history.",
+    "permissions": "Django REST Framework permission classes."
+  },
+  "invariants": [
+    {
+      "name": "orm_boundary",
+      "pattern": "objects\\.filter|objects\\.get|objects\\.create|objects\\.update|select_related|prefetch_related",
+      "description": "database access via Django ORM; avoid raw SQL for model queries",
+      "min_hits": 3,
+      "roles": ["data", "service"],
+      "module_contains": "",
+      "not_module_contains": "test"
+    },
+    {
+      "name": "migration_discipline",
+      "pattern": "makemigrations|class Migration",
+      "description": "model changes require Django migrations; never edit schema directly",
+      "min_hits": 1,
+      "roles": ["data"],
+      "module_contains": "",
+      "not_module_contains": ""
+    }
+  ]
+}

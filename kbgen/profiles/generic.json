@@ -1,0 +1,45 @@
+{
+  "name": "generic",
+  "entry_points": [],
+  "ignore_dirs": [],
+  "role_map": {},
+  "summaries": {},
+  "invariants": [
+    {
+      "name": "uuid_v7",
+      "pattern": "uuid\\s*[_-]?v?7|uuidv7|install_uuid_v7|uuid7",
+      "description": "primary identifiers use UUIDv7 generation",
+      "min_hits": 1,
+      "roles": [],
+      "module_contains": "",
+      "not_module_contains": ""
+    },
+    {
+      "name": "utc_datetime",
+      "pattern": "timezone\\.utc|utcnow|\\butc\\b",
+      "description": "use timezone-aware UTC datetimes; avoid naive local timestamps",
+      "min_hits": 3,
+      "roles": [],
+      "module_contains": "",
+      "not_module_contains": ""
+    },
+    {
+      "name": "schema_boundary",
+      "pattern": "schema|model|alembic|migration|dao|repository",
+      "description": "persistence flows through schema/model/dao boundaries",
+      "min_hits": 3,
+      "roles": ["data"],
+      "module_contains": "",
+      "not_module_contains": ""
+    },
+    {
+      "name": "http_error_contract",
+      "pattern": "unauthorizedexception|forbiddenexception|www-authenticate|www_authenticate",
+      "description": "401 = unauthenticated; 403 = authenticated but forbidden; never swap",
+      "min_hits": 2,
+      "roles": [],
+      "module_contains": "",
+      "not_module_contains": ""
+    }
+  ]
+}

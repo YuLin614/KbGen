@@ -8,6 +8,7 @@ from pathlib import Path
 from kbgen.benchmark import benchmark, format_markdown_report
 from kbgen.claude_wrapper import run_claude_with_proxy
 from kbgen.core import full_scan, incremental_update, init_artifacts
+from kbgen.gain import show_gain
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,12 +24,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Max key file paths per module in snapshot (default: 0, unlimited)",
     )
+    scan_parser.add_argument(
+        "--module-strategy",
+        choices=["auto", "top_level", "monorepo_2level"],
+        default=None,
+        help="Module grouping strategy override (default: from kbgen.json or auto)",
+    )
+    scan_parser.add_argument(
+        "--module-root",
+        action="append",
+        default=None,
+        help="Explicit module root (repeatable), e.g. packages/api",
+    )
     update_parser = sub.add_parser("update", help="Run incremental update from git diff")
     update_parser.add_argument(
         "--path-limit",
         type=int,
         default=0,
         help="Max key file paths per module in snapshot (default: 0, unlimited)",
+    )
+    update_parser.add_argument(
+        "--module-strategy",
+        choices=["auto", "top_level", "monorepo_2level"],
+        default=None,
+        help="Module grouping strategy override (default: from kbgen.json or auto)",
+    )
+    update_parser.add_argument(
+        "--module-root",
+        action="append",
+        default=None,
+        help="Explicit module root (repeatable), e.g. packages/api",
     )
 
     benchmark_parser = sub.add_parser("benchmark", help="Evaluate A/B run logs for token savings")
@@ -67,6 +92,19 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=argparse.REMAINDER,
         help="Arguments forwarded verbatim to the claude CLI",
     )
+    gain_parser = sub.add_parser("gain", help="Show token usage stats across kbclaude sessions")
+    gain_parser.add_argument(
+        "--history",
+        action="store_true",
+        help="Show all sessions instead of last 10",
+    )
+    gain_parser.add_argument(
+        "--last",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Number of recent sessions to display (default: 10)",
+    )
     return parser
 
 
@@ -83,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         result = full_scan(
             root,
             key_path_limit=args.path_limit,
+            module_strategy=args.module_strategy,
+            module_roots=args.module_root,
         )
         print(json.dumps({"status": "ok", **result}, indent=2))
         return 0
@@ -91,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
         result = incremental_update(
             root,
             key_path_limit=args.path_limit,
+            module_strategy=args.module_strategy,
+            module_roots=args.module_root,
         )
         print(json.dumps({"status": "ok", **result}, indent=2))
         return 0
@@ -119,6 +161,10 @@ def main(argv: list[str] | None = None) -> int:
         if claude_args and claude_args[0] == "--":
             claude_args = claude_args[1:]
         return run_claude_with_proxy(claude_args)
+
+    if args.command == "gain":
+        show_gain(n_recent=args.last, show_history=args.history)
+        return 0
 
     print(f"unknown command: {args.command}", file=sys.stderr)
     return 2

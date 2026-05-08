@@ -5,6 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from kbgen.config import KbgenConfig, load_config
 from kbgen.constants import ENTRYPOINT_NAMES, IGNORED_DIR_NAMES, ROUTE_INDEX_LIMIT
 from kbgen.import_resolver import resolve_import_target
 from kbgen.parsing import (
@@ -13,6 +14,7 @@ from kbgen.parsing import (
     extract_exports,
     module_for_path,
     parse_import_candidates,
+    resolve_module_roots,
 )
 from kbgen.route_extraction import extract_auth_markers, extract_route_entries
 
@@ -41,39 +43,59 @@ class ScanData:
     auth_chain: list[str]
 
 
-def infer_role(module: str, files: list[Path], has_entrypoint: bool) -> list[str]:
+def infer_role(module: str, files: list[Path], has_entrypoint: bool, config: KbgenConfig) -> list[str]:
     tags: list[str] = []
     names = {f.name.lower() for f in files}
     joined = " ".join(names)
     suffixes = {f.suffix.lower() for f in files}
     is_python = ".py" in suffixes and ".ts" not in suffixes and ".tsx" not in suffixes
+    lower = module.lower()
+
     if has_entrypoint:
         tags.append("entry")
-    if any(k in module.lower() for k in ("api", "route", "http")) or "router" in joined:
-        tags.append("routing")
+
+    # profile role_map: exact module name match takes priority
+    if lower in config.role_map:
+        mapped = config.role_map[lower]
+        if mapped not in tags:
+            tags.append(mapped)
+
+    if any(k in lower for k in ("api", "route", "http")) or "router" in joined:
+        if "routing" not in tags:
+            tags.append("routing")
     if is_python and any(k in joined for k in ("controller", "blueprint", "views", "view")):
         if "routing" not in tags:
             tags.append("routing")
     if is_python and any(k in joined for k in ("task", "worker", "celery", "consumer")):
-        tags.append("worker")
-    if any(k in module.lower() for k in ("auth", "login", "session")):
-        tags.append("auth")
-    if any(k in module.lower() for k in ("db", "repo", "model", "store")):
-        tags.append("data")
+        if "worker" not in tags:
+            tags.append("worker")
+    if any(k in lower for k in ("auth", "login", "session")):
+        if "auth" not in tags:
+            tags.append("auth")
+    if any(k in lower for k in ("db", "repo", "model", "store")):
+        if "data" not in tags:
+            tags.append("data")
     if is_python and any(k in joined for k in ("model", "migration", "alembic", "schema", "orm")):
         if "data" not in tags:
             tags.append("data")
-    if any(k in module.lower() for k in ("service", "svc", "domain", "logic")):
-        tags.append("service")
-    if any(k in module.lower() for k in ("test", "spec")) or any(k in joined for k in ("test_", "_test", "conftest")):
-        tags.append("test")
+    if any(k in lower for k in ("service", "svc", "domain", "logic")):
+        if "service" not in tags:
+            tags.append("service")
+    if any(k in lower for k in ("test", "spec")) or any(k in joined for k in ("test_", "_test", "conftest")):
+        if "test" not in tags:
+            tags.append("test")
     if not tags:
         tags.append("module")
     return tags[:3]
 
 
-def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str:
+def infer_module_summary(module: str, role: list[str], files: list[Path], config: KbgenConfig) -> str:
     lower = module.lower()
+
+    # profile/user summary override
+    if lower in config.summaries:
+        return config.summaries[lower]
+
     names = " ".join(f.name.lower() for f in files)
     if lower == "app":
         return "Application routes, pages, and server handlers."
@@ -153,7 +175,7 @@ def infer_module_summary(module: str, role: list[str], files: list[Path]) -> str
     return "Module-level implementation and supporting utilities."
 
 
-def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> list[str]:
+def infer_module_invariants(module: str, role: list[str], files: list[Path], config: KbgenConfig) -> list[str]:
     invariants: list[str] = []
     snippets: list[str] = []
     module_lower = module.lower()
@@ -180,96 +202,51 @@ def infer_module_invariants(module: str, role: list[str], files: list[Path]) -> 
     if not corpus:
         return invariants
 
-    uuid_hits = len(re.findall(r"uuid\s*[_-]?v?7|uuidv7|install_uuid_v7|uuid7", corpus))
-    utc_hits = len(re.findall(r"timezone\.utc|\butc\b|utcnow", corpus))
-    datetime_hits = len(re.findall(r"datetime|timestamp|expires|expiration|created_at|updated_at", corpus))
-    auth_hits = len(re.findall(r"jwt|bearer|keycloak|openid|oidc|oauth|access token|refresh token", corpus))
-    dlq_hits = len(re.findall(r"\bdlq\b|dead[_ -]?letter", corpus))
-    replay_hits = len(re.findall(r"replay|discard|bulk-replay|metrics", corpus))
-    schema_hits = len(re.findall(r"schema|model|alembic|migration|dao|repository", corpus))
-    delegation_hits = len(re.findall(r"is_auth_service|auth_consumer_handler|authconsumerhandlerfactory", corpus))
-    http_error_hits = len(re.findall(r"unauthorizedexception|forbiddenexception|www-authenticate|www_authenticate", corpus))
-    no_api_key_hits = len(re.findall(r"jwt-only auth|api key fields removed|api key auth superseded", corpus))
-    s2s_hits = len(re.findall(r"allowed_callers|caller_azp|caller_restriction", corpus))
-    pii_crypto_hits = len(
-        re.findall(
-            r"fernet|encrypt_data_bulk|encrypted_fields|filename_hash|email_hash|blind index|reencrypt|pii",
-            corpus,
-        )
-    )
+    seen: set[str] = set()
+    for inv_def in config.invariants:
+        try:
+            hits = len(re.findall(inv_def.pattern, corpus, re.IGNORECASE))
+        except re.error:
+            continue
+        if hits < inv_def.min_hits:
+            continue
 
-    if uuid_hits >= 1:
-        invariants.append(
-            f"{module}>uuid_v7: primary identifiers are expected to use UUIDv7 generation/migration paths"
-        )
+        if inv_def.roles:
+            role_ok = any(r in role for r in inv_def.roles)
+            # module_contains acts as OR fallback for role filter
+            module_ok = bool(inv_def.module_contains) and inv_def.module_contains in module_lower
+            if not role_ok and not module_ok:
+                continue
+        elif inv_def.module_contains and inv_def.module_contains not in module_lower:
+            continue
 
-    if utc_hits >= 2 and datetime_hits >= 2:
-        invariants.append(
-            f"{module}>utc_datetime: use timezone-aware UTC datetimes and avoid naive local timestamps"
-        )
+        if inv_def.not_module_contains and inv_def.not_module_contains in module_lower:
+            continue
 
-    auth_module = ("auth" in module_lower) or ("auth" in role)
-    is_service_like = any(r in role for r in ("routing", "auth", "service", "data", "worker")) or "auth" in module_lower or "common" in module_lower
-    if auth_module or (is_service_like and auth_hits >= 5):
-        invariants.append(
-            f"{module}>jwt_or_oidc_auth: protected paths are expected to validate JWT/OIDC bearer identity"
-        )
-
-    is_auth_service_module = "auth" in module_lower and "service" in module_lower
-    if delegation_hits >= 1 and not is_auth_service_module:
-        invariants.append(
-            f"{module}>auth_check_delegation: non-auth services delegate all authorization to"
-            f" auth-service via POST /api/v1/auth/check; never re-validate JWT locally"
-        )
-
-    if http_error_hits >= 2:
-        invariants.append(
-            f"{module}>http_error_contract: 401 means unauthenticated (missing/invalid token, includes"
-            f" WWW-Authenticate header); 403 means authenticated but forbidden; never swap them"
-        )
-
-    if dlq_hits >= 2 and replay_hits >= 1:
-        invariants.append(
-            f"{module}>dlq_replay_flow: dead-letter entries support controlled replay/discard recovery flows"
-        )
-
-    is_service_module = module_lower.endswith("-service") or module_lower.endswith("_service")
-    explicit_no_api_key_owner = is_service_module or auth_module or ("common" in module_lower)
-    no_api_key_expected = (no_api_key_hits >= 1 and explicit_no_api_key_owner) or (
-        is_service_module and (auth_module or delegation_hits >= 1 or http_error_hits >= 1)
-    )
-    if no_api_key_expected:
-        invariants.append(
-            f"{module}>no_api_key: authentication is JWT/OIDC only (DMS-146);"
-            f" API key support has been removed and must not be re-introduced"
-        )
-
-    if s2s_hits >= 1:
-        invariants.append(
-            f"{module}>s2s_azp_restriction: service-to-service endpoints restrict callers by azp JWT"
-            f" claim via @allowed_callers; every permitted caller must be explicitly allowlisted"
-        )
-
-    pii_owner = ("auth" in module_lower) or ("record" in module_lower) or ("common" in module_lower)
-    if pii_owner and pii_crypto_hits >= 3:
-        invariants.append(
-            f"{module}>pii_fernet_encryption: PII fields (for example user name/email and file"
-            f" filename) are stored encrypted with Fernet key chains and blind-index lookups"
-        )
-
-    if "data" in role and schema_hits >= 3:
-        invariants.append(
-            f"{module}>schema_boundary: persistence should flow through schema/model/dao boundaries"
-        )
+        entry = f"{module}>{inv_def.name}: {inv_def.description}"
+        if entry not in seen:
+            seen.add(entry)
+            invariants.append(entry)
 
     return invariants
 
 
-def structural_scan(root: Path) -> ScanData:
-    files = collect_source_files(root)
+def structural_scan(root: Path, config: KbgenConfig) -> ScanData:
+    ignore_dirs = IGNORED_DIR_NAMES | config.ignore_dirs
+    ignored_modules = {k for k, v in config.module_overrides.items() if v.get("ignore")}
+    all_entry_names = ENTRYPOINT_NAMES | config.entry_points
+    module_roots = resolve_module_roots(
+        root,
+        module_strategy=config.module_strategy,
+        configured_module_roots=config.module_roots,
+    )
+
+    files = collect_source_files(root, extra_ignore=ignore_dirs)
     modules: dict[str, list[Path]] = defaultdict(list)
     for f in files:
-        modules[module_for_path(f, root)].append(f)
+        mod = module_for_path(f, root, module_roots=module_roots)
+        if mod not in ignored_modules:
+            modules[mod].append(f)
 
     exports: dict[str, list[str]] = defaultdict(list)
     anchors: dict[str, list[str]] = defaultdict(list)
@@ -282,25 +259,25 @@ def structural_scan(root: Path) -> ScanData:
 
     pkg_to_module: dict[str, str] = {}
     for setup_file in root.rglob("setup.py"):
-        if any(part in IGNORED_DIR_NAMES for part in setup_file.parts):
+        if any(part in ignore_dirs for part in setup_file.parts):
             continue
         try:
             setup_text = setup_file.read_text(encoding="utf-8", errors="ignore")
             for m in re.finditer(r"name\s*=\s*['\"]([^'\"]+)['\"]", setup_text):
                 pkg_name = m.group(1).replace("-", "_")
-                mod = module_for_path(setup_file, root)
+                mod = module_for_path(setup_file, root, module_roots=module_roots)
                 pkg_to_module[pkg_name] = mod
                 break
         except Exception:
             pass
     for toml_file in root.rglob("pyproject.toml"):
-        if any(part in IGNORED_DIR_NAMES for part in toml_file.parts):
+        if any(part in ignore_dirs for part in toml_file.parts):
             continue
         try:
             toml_text = toml_file.read_text(encoding="utf-8", errors="ignore")
             for m in re.finditer(r'^name\s*=\s*["\']([^"\']+)["\']', toml_text, flags=re.MULTILINE):
                 pkg_name = m.group(1).replace("-", "_")
-                mod = module_for_path(toml_file, root)
+                mod = module_for_path(toml_file, root, module_roots=module_roots)
                 pkg_to_module[pkg_name] = mod
                 break
         except Exception:
@@ -327,12 +304,17 @@ def structural_scan(root: Path) -> ScanData:
             for marker in extract_auth_markers(file, text, root):
                 auth_markers.add(marker)
 
-            if file.name in ENTRYPOINT_NAMES:
+            if file.name in all_entry_names:
                 entry_modules.add(module)
 
             for candidate in parse_import_candidates(text, file.suffix.lower()):
                 resolved_module, resolved_path = resolve_import_target(
-                    candidate, file, root, module_names, pkg_to_module
+                    candidate,
+                    file,
+                    root,
+                    module_names,
+                    pkg_to_module,
+                    module_roots=module_roots,
                 )
                 if resolved_module and resolved_module != module:
                     deps[module].add(resolved_module)
@@ -356,7 +338,7 @@ def structural_scan(root: Path) -> ScanData:
     )
 
 
-def synthesize(scan: ScanData) -> dict[str, ModuleSynthesis]:
+def synthesize(scan: ScanData, config: KbgenConfig) -> dict[str, ModuleSynthesis]:
     used_by: dict[str, set[str]] = {m: set() for m in scan.modules}
     for src, targets in scan.deps.items():
         for target in targets:
@@ -364,9 +346,18 @@ def synthesize(scan: ScanData) -> dict[str, ModuleSynthesis]:
 
     out: dict[str, ModuleSynthesis] = {}
     for module, files in scan.modules.items():
-        role = infer_role(module, files, module in scan.entry_modules)
+        role = infer_role(module, files, module in scan.entry_modules, config)
+        summary = infer_module_summary(module, role, files, config)
         deps = sorted(scan.deps.get(module, set()))
-        inv = infer_module_invariants(module, role, files)
+        inv = infer_module_invariants(module, role, files, config)
+
+        # apply module overrides from kbgen.json
+        override = config.module_overrides.get(module, {})
+        if "role" in override:
+            role = [override["role"]]
+        if "summary" in override:
+            summary = override["summary"]
+
         if module in scan.entry_modules:
             inv.append(f"{module}>entry")
         if "test" in role:
@@ -374,7 +365,7 @@ def synthesize(scan: ScanData) -> dict[str, ModuleSynthesis]:
 
         out[module] = ModuleSynthesis(
             role=role,
-            summary=infer_module_summary(module, role, files),
+            summary=summary,
             exports=scan.exports.get(module, []),
             anchors=scan.anchors.get(module, []),
             deps=deps,

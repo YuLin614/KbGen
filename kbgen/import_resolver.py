@@ -16,6 +16,7 @@ def resolve_import_target(
     root: Path,
     module_names: set[str],
     pkg_to_module: dict[str, str] | None = None,
+    module_roots: set[str] | None = None,
 ) -> tuple[str | None, Path | None]:
     candidate = candidate.strip()
     if not candidate:
@@ -28,19 +29,19 @@ def resolve_import_target(
             resolved = resolve_relative_import(file, candidate, root)
         if resolved is None:
             return None, None
-        module = module_for_path(resolved, root)
+        module = module_for_path(resolved, root, module_roots=module_roots)
         return (module if module in module_names else None), resolved
 
     if candidate.startswith("@/") or candidate.startswith("~/"):
         resolved = resolve_absolute_like_import(root, candidate[2:])
         if resolved is not None:
-            module = module_for_path(resolved, root)
+            module = module_for_path(resolved, root, module_roots=module_roots)
             return (module if module in module_names else None), resolved
 
     if candidate.startswith("src/"):
         resolved = resolve_absolute_like_import(root, candidate)
         if resolved is not None:
-            module = module_for_path(resolved, root)
+            module = module_for_path(resolved, root, module_roots=module_roots)
             return (module if module in module_names else None), resolved
 
     head = candidate.split("/")[0].split(".")[0]

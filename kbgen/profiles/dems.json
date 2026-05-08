@@ -1,0 +1,63 @@
+{
+  "name": "dems",
+  "entry_points": [],
+  "ignore_dirs": [],
+  "role_map": {},
+  "summaries": {},
+  "invariants": [
+    {
+      "name": "jwt_or_oidc_auth",
+      "pattern": "jwt|bearer|keycloak|openid|oidc|oauth|access token|refresh token",
+      "description": "protected paths validate JWT/OIDC bearer identity",
+      "min_hits": 5,
+      "roles": ["routing", "auth", "service", "data", "worker"],
+      "module_contains": "auth",
+      "not_module_contains": ""
+    },
+    {
+      "name": "auth_check_delegation",
+      "pattern": "is_auth_service|auth_consumer_handler|authconsumerhandlerfactory",
+      "description": "non-auth services delegate authorization to auth-service via POST /api/v1/auth/check; never re-validate JWT locally",
+      "min_hits": 1,
+      "roles": [],
+      "module_contains": "",
+      "not_module_contains": "auth"
+    },
+    {
+      "name": "dlq_replay_flow",
+      "pattern": "\\bdlq\\b|dead[_ -]?letter",
+      "description": "dead-letter entries support controlled replay/discard recovery flows",
+      "min_hits": 2,
+      "roles": [],
+      "module_contains": "",
+      "not_module_contains": ""
+    },
+    {
+      "name": "no_api_key",
+      "pattern": "jwt-only auth|api key fields removed|api key auth superseded",
+      "description": "authentication is JWT/OIDC only (DMS-146); API key support removed and must not be re-introduced",
+      "min_hits": 1,
+      "roles": ["service", "auth", "routing"],
+      "module_contains": "",
+      "not_module_contains": ""
+    },
+    {
+      "name": "s2s_azp_restriction",
+      "pattern": "allowed_callers|caller_azp|caller_restriction",
+      "description": "service-to-service endpoints restrict callers by azp JWT claim; every permitted caller must be explicitly allowlisted",
+      "min_hits": 1,
+      "roles": [],
+      "module_contains": "",
+      "not_module_contains": ""
+    },
+    {
+      "name": "pii_fernet_encryption",
+      "pattern": "fernet|encrypt_data_bulk|encrypted_fields|filename_hash|email_hash|blind index|reencrypt|\\bpii\\b",
+      "description": "PII fields stored encrypted with Fernet key chains and blind-index lookups",
+      "min_hits": 3,
+      "roles": [],
+      "module_contains": "",
+      "not_module_contains": ""
+    }
+  ]
+}

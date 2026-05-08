@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from kbgen.analysis import ScanData, structural_scan, synthesize
+from kbgen.config import KbgenConfig, load_config
 from kbgen.constants import (
     DEFAULT_KEY_PATH_LIMIT,
     SCHEMA_TEXT,
@@ -14,7 +15,21 @@ from kbgen.constants import (
     TOOL_VERSION,
 )
 from kbgen.parsing import estimate_tokens, module_for_path, write_json
+from kbgen.parsing import resolve_module_roots
 from kbgen.snapshot import build_snapshot, evict_snapshot
+
+
+def _effective_config(
+    root: Path,
+    module_strategy: str | None = None,
+    module_roots: list[str] | None = None,
+) -> KbgenConfig:
+    cfg = load_config(root)
+    if module_strategy is not None:
+        cfg.module_strategy = module_strategy
+    if module_roots is not None:
+        cfg.module_roots = [str(item) for item in module_roots]
+    return cfg
 
 
 def build_meta(confidence: str, stale_modules: list[str]) -> dict[str, Any]:
@@ -61,10 +76,17 @@ def init_artifacts(root: Path) -> None:
 def full_scan(
     root: Path,
     key_path_limit: int = DEFAULT_KEY_PATH_LIMIT,
+    module_strategy: str | None = None,
+    module_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     init_artifacts(root)
-    scan = structural_scan(root)
-    synthesized = synthesize(scan)
+    config = _effective_config(
+        root,
+        module_strategy=module_strategy,
+        module_roots=module_roots,
+    )
+    scan = structural_scan(root, config)
+    synthesized = synthesize(scan, config)
     snapshot = build_snapshot(synthesized, scan, key_path_limit=key_path_limit)
     snapshot = evict_snapshot(snapshot)
 
@@ -113,19 +135,31 @@ def _git_changed_files(root: Path) -> list[str]:
 def incremental_update(
     root: Path,
     key_path_limit: int = DEFAULT_KEY_PATH_LIMIT,
+    module_strategy: str | None = None,
+    module_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     init_artifacts(root)
     ai = ensure_ai_dir(root)
     snapshot_path = ai / "snapshot.kb"
     previous = _read_snapshot(snapshot_path)
 
-    scan = structural_scan(root)
-    synthesized = synthesize(scan)
+    config = _effective_config(
+        root,
+        module_strategy=module_strategy,
+        module_roots=module_roots,
+    )
+    module_roots = resolve_module_roots(
+        root,
+        module_strategy=config.module_strategy,
+        configured_module_roots=config.module_roots,
+    )
+    scan = structural_scan(root, config)
+    synthesized = synthesize(scan, config)
     current = build_snapshot(synthesized, scan, key_path_limit=key_path_limit)
 
     changed_files = _git_changed_files(root)
     changed_modules = {
-        module_for_path(root / f, root)
+        module_for_path(root / f, root, module_roots=module_roots)
         for f in changed_files
         if (root / f).suffix.lower() in SUPPORTED_EXTENSIONS
     }

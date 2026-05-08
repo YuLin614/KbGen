@@ -44,6 +44,18 @@ kbgen scan --path-limit 5
 
 `--path-limit` controls how many key file paths (`p`) are kept per module (default: 0, unlimited).
 
+Tune module grouping for monorepos:
+
+```bash
+kbgen scan --module-strategy monorepo_2level
+kbgen update --module-root packages/api --module-root packages/web
+```
+
+- `--module-strategy auto` (default): detect monorepo roots conservatively
+- `--module-strategy top_level`: keep legacy first-level module grouping
+- `--module-strategy monorepo_2level`: treat `packages/*`, `apps/*`, `services/*`, `libs/*` as module roots
+- `--module-root ...`: explicit module roots (repeatable), overrides auto detection
+
 Token budget eviction is disabled to preserve full snapshot detail during cold start.
 
 Snapshot size now uses soft overflow control: when payload grows too large, verbose fields like `p` and `fd` are compacted automatically to reduce agent read-token cost while preserving navigation signals.
