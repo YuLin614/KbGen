@@ -86,6 +86,7 @@ def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
         return []
 
     if suffix == ".py":
+        from kbgen.ast_parsers import get_parser
         entries: list[str] = []
         bp_prefixes: dict[str, str] = {}
         local_bp_prefixes: dict[str, str] = {}
@@ -111,27 +112,27 @@ def extract_route_entries(path: Path, text: str, root: Path) -> list[str]:
             prefix = bp_prefixes.get(obj, "") or local_bp_prefixes.get(obj, "")
             return _join_route(prefix, route_path)
 
-        flask_pattern = re.compile(
-            r"@([\w\.]+)\.route\(['\"]([^'\"]*)['\"](?:[^)]*methods\s*=\s*\[([^\]]+)\])?",
-        )
-        for m in flask_pattern.finditer(text):
-            route_path = with_prefix(m.group(1), m.group(2))
-            methods_raw = m.group(3) or "GET"
-            methods = re.findall(r"['\"]([A-Z]+)['\"]", methods_raw) or ["GET"]
-            line = text.count("\n", 0, m.start()) + 1
-            method_str = "|".join(sorted(methods))
-            entries.append(f"api:{route_path}[{method_str}]->{rel}:{line}")
+        parser = get_parser(path)
+        if parser is not None:
+            for deco in parser.extract_decorators(text, path):
+                # Flask: @app.route('/path', methods=[...])
+                if deco.name.endswith(".route") and deco.args:
+                    route_path = with_prefix(deco.name[: -len(".route")], deco.args[0])
+                    methods = deco.kwargs.get("methods", ["GET"])
+                    if isinstance(methods, list):
+                        method_str = "|".join(sorted(str(m).upper() for m in methods))
+                    else:
+                        method_str = "GET"
+                    entries.append(f"api:{route_path}[{method_str}]->{rel}:{deco.lineno}")
 
-        fastapi_pattern = re.compile(
-            r"@([\w\.]+)\.(get|post|put|patch|delete|options|head)\(['\"]([^'\"]*)['\"]",
-            re.IGNORECASE,
-        )
-        for m in fastapi_pattern.finditer(text):
-            method = m.group(2).upper()
-            route_path = with_prefix(m.group(1), m.group(3))
-            line = text.count("\n", 0, m.start()) + 1
-            entries.append(f"api:{route_path}[{method}]->{rel}:{line}")
+                # FastAPI: @router.get/post/put/patch/delete('/path')
+                elif "." in deco.name and deco.args:
+                    _obj, _, http_method = deco.name.rpartition(".")
+                    if http_method.upper() in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}:
+                        route_path = with_prefix(_obj, deco.args[0])
+                        entries.append(f"api:{route_path}[{http_method.upper()}]->{rel}:{deco.lineno}")
 
+        # Django path()/re_path() — function calls, not decorators; keep regex
         django_pattern = re.compile(r"(?:re_)?path\(['\"]([^'\"]+)['\"]")
         for m in django_pattern.finditer(text):
             if "urlpatterns" in text or "include(" in text:
