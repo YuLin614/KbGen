@@ -16,6 +16,8 @@ import time
 import zlib
 from pathlib import Path
 
+from kbgen.quality import compute_quality
+
 UPSTREAM_HOST = "api.anthropic.com"
 UPSTREAM_PORT = 443
 PROXY_BIND = "127.0.0.1"
@@ -78,7 +80,12 @@ class TokenUsage:
             self.request_count += 1
             return self.request_count
 
-    def format_summary(self, elapsed_sec: float) -> str:
+    def format_summary(
+        self,
+        elapsed_sec: float,
+        quality: dict | None = None,
+        avg_no_snap_input: float | None = None,
+    ) -> str:
         total_input = self.input_tokens + self.cache_creation_tokens + self.cache_read_tokens
         lines = [
             "--- kbclaude session summary ---",
@@ -89,8 +96,20 @@ class TokenUsage:
             f"  Total input       : {total_input:,}  (uncached + cache_write + cache_read)",
             f"  Output tokens     : {self.output_tokens:,}",
             f"  Duration          : {elapsed_sec:.1f}s",
-            "--------------------------------",
         ]
+        if avg_no_snap_input is not None and avg_no_snap_input > 0 and total_input > 0:
+            saving_pct = (1 - total_input / avg_no_snap_input) * 100
+            direction = "▲" if saving_pct >= 0 else "▼"
+            lines.append(f"  Est. saving       : {direction} {abs(saving_pct):.0f}% vs no-snapshot baseline")
+        elif avg_no_snap_input is None:
+            lines.append("  Est. saving       : n/a (no baseline sessions)")
+        if quality and quality.get("available"):
+            score = quality["quality_score"]
+            grade = quality["grade"]
+            stale = quality["stale_files"]
+            stale_note = f"  [{stale} files stale — run `kbgen update`]" if stale > 0 else ""
+            lines.append(f"  Snapshot quality  : {grade} ({score:.0f}/100){stale_note}")
+        lines.append("--------------------------------")
         return "\n".join(lines)
 
 
@@ -660,12 +679,24 @@ def _persist_budget(budget: BudgetTracker) -> None:
         pass
 
 
-def _persist_session(usage: "TokenUsage", elapsed_sec: float, cwd: Path) -> None:
+def _persist_session(usage: "TokenUsage", elapsed_sec: float, cwd: Path, quality: dict | None = None) -> None:
     """Append one session record to ~/.kbgen/sessions.jsonl (best-effort)."""
     try:
         log_path = _sessions_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        snapshot_present = (cwd / ".ai" / "snapshot.kb").exists()
+        snapshot_path = cwd / ".ai" / "snapshot.kb"
+        snapshot_present = snapshot_path.exists()
+
+        snapshot_tokens: int | None = None
+        if snapshot_present:
+            try:
+                raw = snapshot_path.read_text(encoding="utf-8")
+                from kbgen.parsing import estimate_tokens
+                snapshot_tokens = estimate_tokens(raw)
+            except Exception:
+                pass
+
+        q = quality or {}
         record = {
             "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "duration_s": round(elapsed_sec, 1),
@@ -676,6 +707,10 @@ def _persist_session(usage: "TokenUsage", elapsed_sec: float, cwd: Path) -> None
             "cache_read_tokens": usage.cache_read_tokens,
             "snapshot": snapshot_present,
             "cwd": str(cwd),
+            "snapshot_tokens": snapshot_tokens,
+            "snapshot_coverage_pct": q.get("coverage_pct"),
+            "snapshot_staleness_pct": q.get("staleness_pct"),
+            "snapshot_quality_score": q.get("quality_score"),
         }
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
@@ -780,8 +815,19 @@ def run_claude_with_proxy(claude_args: list[str], auto_scan: bool = True) -> int
         elapsed = time.monotonic() - start
         server.shutdown()
         server.server_close()
-        _persist_session(usage, elapsed, cwd)
-        print(f"\n{usage.format_summary(elapsed)}", file=sys.stderr)
+        quality = compute_quality(cwd)
+        try:
+            from kbgen.gain import _load_sessions, _total_input
+            all_sessions = _load_sessions()
+            no_snap = [s for s in all_sessions if not s.get("snapshot")]
+            avg_no_snap: float | None = (
+                sum(_total_input(s) for s in no_snap) / len(no_snap)
+                if no_snap else None
+            )
+        except Exception:
+            avg_no_snap = None
+        _persist_session(usage, elapsed, cwd, quality=quality)
+        print(f"\n{usage.format_summary(elapsed, quality=quality, avg_no_snap_input=avg_no_snap)}", file=sys.stderr)
         if budget.enabled:
             _persist_budget(budget)
             print(f"\n{budget.format_summary()}", file=sys.stderr)
