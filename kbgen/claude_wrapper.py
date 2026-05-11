@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import gzip
 import http.client
 import http.server
 import json
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from pathlib import Path
 
 UPSTREAM_HOST = "api.anthropic.com"
@@ -51,6 +53,9 @@ _MODEL_PRICING_PER_M: tuple[tuple[str, dict[str, float]], ...] = (
 )
 
 _DEFAULT_PRICING_PER_M = {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30}
+
+_DEFAULT_REALTIME_USAGE_ENABLED = True
+_DEFAULT_REALTIME_USAGE_INTERVAL_SEC = 1.0
 
 
 @dataclasses.dataclass
@@ -165,6 +170,31 @@ def _extract_usage_from_json_body(body: bytes) -> dict:
         return {}
 
 
+def _maybe_decode_for_parsing(body: bytes, content_encoding: str) -> bytes:
+    """Decode compressed response body for usage parsing only (best-effort)."""
+    enc = (content_encoding or "").strip().lower()
+    if not body or not enc:
+        return body
+    try:
+        if enc == "gzip":
+            return gzip.decompress(body)
+        if enc == "deflate":
+            return zlib.decompress(body)
+    except Exception:
+        return body
+    return body
+
+
+def _make_sse_decoder(content_encoding: str):
+    """Return an incremental decoder for compressed SSE payloads, or None."""
+    enc = (content_encoding or "").strip().lower()
+    if enc == "gzip":
+        return zlib.decompressobj(16 + zlib.MAX_WBITS)
+    if enc == "deflate":
+        return zlib.decompressobj()
+    return None
+
+
 def _extract_model_from_request(body: bytes) -> str | None:
     try:
         payload = json.loads(body)
@@ -214,15 +244,42 @@ def _estimate_request_cost_usd(
     return total
 
 
+def _load_realtime_usage_settings() -> tuple[bool, float]:
+    enabled_raw = os.environ.get("KBGEN_REALTIME_USAGE", "1").strip().lower()
+    enabled = enabled_raw not in {"0", "false", "no", "off"}
+
+    interval = _DEFAULT_REALTIME_USAGE_INTERVAL_SEC
+    interval_raw = os.environ.get("KBGEN_REALTIME_USAGE_INTERVAL", "").strip()
+    if interval_raw:
+        try:
+            interval = max(0.2, float(interval_raw))
+        except ValueError:
+            print(
+                f"[kbclaude] invalid KBGEN_REALTIME_USAGE_INTERVAL={interval_raw!r}, using {interval:.1f}s",
+                file=sys.stderr,
+            )
+    return enabled, interval
+
+
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     usage: TokenUsage        # injected per-server via _make_server subclass
     snapshot_path: Path      # injected per-server; empty Path means no snapshot
     _injected: bool = False  # class-level default; overridden per-server instance
     _inject_lock: threading.Lock  # injected per-server
     budget: BudgetTracker
+    realtime_usage_enabled: bool
+    realtime_usage_interval_sec: float
 
     def log_message(self, *args) -> None:
         pass  # suppress per-request noise
+
+    def _print_status_line(self, message: str) -> None:
+        # Force a dedicated line in mixed TUI/terminal output.
+        try:
+            sys.stderr.write(f"\n{message}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
 
     def do_GET(self) -> None:
         self._forward_request("GET")
@@ -269,7 +326,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         model_name: str | None = None
 
         # Inject snapshot guidance into the very first /v1/messages call
-        if method == "POST" and self.path.startswith("/v1/messages"):
+        track_usage = method == "POST" and self.path.startswith("/v1/messages")
+        if track_usage:
             body = self._maybe_inject(body)
             model_name = _extract_model_from_request(body)
 
@@ -294,34 +352,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if k.lower() not in _HOP_BY_HOP
         ]
         content_type = resp.getheader("Content-Type", "")
+        content_encoding = resp.getheader("Content-Encoding", "")
 
         if "text/event-stream" in content_type:
-            self._forward_sse_response(resp, resp_headers, model_name)
+            self._forward_sse_response(resp, resp_headers, model_name, content_encoding, track_usage)
         else:
-            self._forward_json_response(resp, resp_headers, model_name)
+            self._forward_json_response(resp, resp_headers, model_name, content_encoding, track_usage)
 
         conn.close()
-
-    def _emit_realtime_token_budget(
-        self,
-        request_no: int,
-        model_name: str | None,
-        req_input: int,
-        req_cache_create: int,
-        req_cache_read: int,
-    ) -> None:
-        total_prompt = req_input + req_cache_create + req_cache_read
-        context_limit = _context_limit_for_model(model_name)
-        remaining = max(0, context_limit - total_prompt)
-        model_label = model_name or "unknown"
-        print(
-            (
-                f"[kbclaude] req#{request_no} model={model_label} "
-                f"prompt={total_prompt:,} / {context_limit:,} "
-                f"est_remaining={remaining:,}"
-            ),
-            file=sys.stderr,
-        )
 
     def _emit_realtime_cost_budget(
         self,
@@ -341,23 +379,42 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             req_cache_create,
             req_cache_read,
         )
-        session_spent, total_spent, remaining = self.budget.add_cost(req_cost)
+        _session_spent, _total_spent, remaining = self.budget.add_cost(req_cost)
         _persist_budget(self.budget)
-        model_label = model_name or "unknown"
-        print(
-            (
-                f"[kbclaude] req#{request_no} model={model_label} "
-                f"cost~${req_cost:.4f} session~${session_spent:.4f} "
-                f"total~${total_spent:.4f} remaining~${remaining:.4f}"
-            ),
-            file=sys.stderr,
+        self._print_status_line(f"[kbclaude] req#{request_no} remaining~${remaining:.4f}")
+
+    def _emit_live_request_progress(
+        self,
+        model_name: str | None,
+        started_at: float,
+        req_input: int,
+        req_output: int,
+        req_cache_create: int,
+        req_cache_read: int,
+    ) -> None:
+        if not self.realtime_usage_enabled:
+            return
+        if not self.budget.enabled:
+            return
+        elapsed = max(0.0, time.monotonic() - started_at)
+        req_cost = _estimate_request_cost_usd(
+            model_name,
+            req_input,
+            req_output,
+            req_cache_create,
+            req_cache_read,
         )
+        live_total = self.budget.total_spent_usd + req_cost
+        remaining = max(0.0, self.budget.budget_usd - live_total)
+        self._print_status_line(f"[kbclaude] live t+{elapsed:.1f}s remaining~${remaining:.4f}")
 
     def _forward_sse_response(
         self,
         resp: http.client.HTTPResponse,
         resp_headers: list,
         model_name: str | None,
+        content_encoding: str,
+        track_usage: bool,
     ) -> None:
         self.send_response(resp.status, resp.reason)
         for name, value in resp_headers:
@@ -366,20 +423,61 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
         req_input = req_output = req_cache_create = req_cache_read = 0
-        try:
-            while True:
-                line = resp.readline()
-                if not line:
-                    break
-                tokens = _extract_usage_from_sse_line(line)
+        started_at = time.monotonic()
+        last_live_emit = 0.0
+        decoder = _make_sse_decoder(content_encoding)
+        decoded_buf = b""
+
+        def _consume_decoded(decoded_chunk: bytes) -> None:
+            nonlocal decoded_buf, req_input, req_output, req_cache_create, req_cache_read
+            if not decoded_chunk:
+                return
+            decoded_buf += decoded_chunk
+            while b"\n" in decoded_buf:
+                one_line, decoded_buf = decoded_buf.split(b"\n", 1)
+                tokens = _extract_usage_from_sse_line(one_line + b"\n")
                 req_input += tokens.get("input_tokens", 0)
                 req_output += tokens.get("output_tokens", 0)
                 req_cache_create += tokens.get("cache_creation_tokens", 0)
                 req_cache_read += tokens.get("cache_read_tokens", 0)
 
+        try:
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+
+                prev_totals = (req_input, req_output, req_cache_create, req_cache_read)
+
+                if decoder is not None:
+                    try:
+                        _consume_decoded(decoder.decompress(line))
+                    except Exception:
+                        pass
+                else:
+                    _consume_decoded(line)
+
                 chunk = hex(len(line))[2:].encode("ascii") + b"\r\n" + line + b"\r\n"
                 self.wfile.write(chunk)
                 self.wfile.flush()
+
+                if self.realtime_usage_enabled and (
+                    req_input,
+                    req_output,
+                    req_cache_create,
+                    req_cache_read,
+                ) != prev_totals:
+                    now = time.monotonic()
+                    if now - last_live_emit >= self.realtime_usage_interval_sec:
+                        self._emit_live_request_progress(
+                            model_name,
+                            started_at,
+                            req_input,
+                            req_output,
+                            req_cache_create,
+                            req_cache_read,
+                        )
+                        last_live_emit = now
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -389,32 +487,56 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-        if req_input or req_output or req_cache_create or req_cache_read:
-            request_no = self.usage.add(req_input, req_output, req_cache_create, req_cache_read)
-            self._emit_realtime_token_budget(
-                request_no,
+        if decoder is not None:
+            try:
+                _consume_decoded(decoder.flush())
+            except Exception:
+                pass
+
+        if decoded_buf:
+            tokens = _extract_usage_from_sse_line(decoded_buf)
+            req_input += tokens.get("input_tokens", 0)
+            req_output += tokens.get("output_tokens", 0)
+            req_cache_create += tokens.get("cache_creation_tokens", 0)
+            req_cache_read += tokens.get("cache_read_tokens", 0)
+
+        if self.realtime_usage_enabled and (req_input or req_output or req_cache_create or req_cache_read):
+            self._emit_live_request_progress(
                 model_name,
-                req_input,
-                req_cache_create,
-                req_cache_read,
-            )
-            self._emit_realtime_cost_budget(
-                request_no,
-                model_name,
+                started_at,
                 req_input,
                 req_output,
                 req_cache_create,
                 req_cache_read,
             )
 
+        if track_usage:
+            request_no = self.usage.add(req_input, req_output, req_cache_create, req_cache_read)
+            if req_input or req_output or req_cache_create or req_cache_read:
+                self._emit_realtime_cost_budget(
+                    request_no,
+                    model_name,
+                    req_input,
+                    req_output,
+                    req_cache_create,
+                    req_cache_read,
+                )
+            else:
+                self._print_status_line(
+                    f"[kbclaude] req#{request_no} observed, but usage fields were missing in API response"
+                )
+
     def _forward_json_response(
         self,
         resp: http.client.HTTPResponse,
         resp_headers: list,
         model_name: str | None,
+        content_encoding: str,
+        track_usage: bool,
     ) -> None:
         body = resp.read()
-        tokens = _extract_usage_from_json_body(body)
+        parse_body = _maybe_decode_for_parsing(body, content_encoding)
+        tokens = _extract_usage_from_json_body(parse_body)
 
         self.send_response(resp.status, resp.reason)
         for name, value in resp_headers:
@@ -427,35 +549,39 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-        if any(tokens.get(k, 0) for k in ("input_tokens", "output_tokens",
-                                           "cache_creation_tokens", "cache_read_tokens")):
+        if track_usage:
             request_no = self.usage.add(
                 tokens.get("input_tokens", 0),
                 tokens.get("output_tokens", 0),
                 tokens.get("cache_creation_tokens", 0),
                 tokens.get("cache_read_tokens", 0),
             )
-            self._emit_realtime_token_budget(
-                request_no,
-                model_name,
-                tokens.get("input_tokens", 0),
-                tokens.get("cache_creation_tokens", 0),
-                tokens.get("cache_read_tokens", 0),
-            )
-            self._emit_realtime_cost_budget(
-                request_no,
-                model_name,
-                tokens.get("input_tokens", 0),
-                tokens.get("output_tokens", 0),
-                tokens.get("cache_creation_tokens", 0),
-                tokens.get("cache_read_tokens", 0),
-            )
+            if any(tokens.get(k, 0) for k in (
+                "input_tokens",
+                "output_tokens",
+                "cache_creation_tokens",
+                "cache_read_tokens",
+            )):
+                self._emit_realtime_cost_budget(
+                    request_no,
+                    model_name,
+                    tokens.get("input_tokens", 0),
+                    tokens.get("output_tokens", 0),
+                    tokens.get("cache_creation_tokens", 0),
+                    tokens.get("cache_read_tokens", 0),
+                )
+            else:
+                self._print_status_line(
+                    f"[kbclaude] req#{request_no} observed, but usage fields were missing in API response"
+                )
 
 
 def _make_server(
     usage: TokenUsage,
     snapshot_path: Path,
     budget: BudgetTracker,
+    realtime_usage_enabled: bool,
+    realtime_usage_interval_sec: float,
 ) -> socketserver.ThreadingTCPServer:
     lock = threading.Lock()
     inject_state = {"done": False}
@@ -465,6 +591,8 @@ def _make_server(
     _Handler.usage = usage
     _Handler.snapshot_path = snapshot_path
     _Handler.budget = budget
+    _Handler.realtime_usage_enabled = realtime_usage_enabled
+    _Handler.realtime_usage_interval_sec = realtime_usage_interval_sec
     _Handler._inject_lock = lock
     _Handler._inject_state = inject_state  # type: ignore[attr-defined]
     socketserver.ThreadingTCPServer.allow_reuse_address = True
@@ -602,6 +730,7 @@ def run_claude_with_proxy(claude_args: list[str], auto_scan: bool = True) -> int
 
     usage = TokenUsage()
     budget = _load_budget_from_env()
+    realtime_usage_enabled, realtime_usage_interval_sec = _load_realtime_usage_settings()
     if budget.enabled:
         remaining = max(0.0, budget.budget_usd - budget.total_spent_usd)
         mode = "persistent" if budget.persist else "session"
@@ -609,7 +738,18 @@ def run_claude_with_proxy(claude_args: list[str], auto_scan: bool = True) -> int
             f"[kbclaude] budget mode={mode} total=${budget.budget_usd:.4f} remaining=${remaining:.4f}",
             file=sys.stderr,
         )
-    server = _make_server(usage, snapshot_path, budget)
+    if realtime_usage_enabled:
+        print(
+            f"[kbclaude] realtime usage enabled (interval={realtime_usage_interval_sec:.1f}s)",
+            file=sys.stderr,
+        )
+    server = _make_server(
+        usage,
+        snapshot_path,
+        budget,
+        realtime_usage_enabled,
+        realtime_usage_interval_sec,
+    )
     port = server.server_address[1]
 
     ready = threading.Event()

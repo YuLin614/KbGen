@@ -125,6 +125,19 @@ Notes:
 - Persistent totals are stored at `~/.kbgen/budget.json`.
 - Set `KBGEN_BUDGET_PERSIST=0` for per-session reset behavior.
 
+Live per-request usage panel (streaming sessions):
+
+```powershell
+$env:KBGEN_REALTIME_USAGE = "1"          # default: 1 (enabled)
+$env:KBGEN_REALTIME_USAGE_INTERVAL = "1" # seconds between live updates (min 0.2)
+kbclaude
+```
+
+Notes:
+
+- Live panel prints rolling `in/out/cache/cost` progress while a response is streaming.
+- Set `KBGEN_REALTIME_USAGE=0` to disable live updates.
+
 ## Benchmark
 
 Use A/B experiment logs to evaluate whether snapshot usage reduces token cost without hurting quality.
