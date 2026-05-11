@@ -95,3 +95,12 @@ ENTRYPOINT_NAMES = {
     "server.ts",
     "manage.py",
 }
+
+# Quality scoring
+QUALITY_WEIGHTS = {"coverage": 0.6, "freshness": 0.4}
+QUALITY_GRADES = [
+    (85, "A"),
+    (70, "B"),
+    (50, "C"),
+    (0,  "D"),
+]
