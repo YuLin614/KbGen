@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +57,6 @@ def _git_changed_since(root: Path, since_ts: str) -> set[str] | None:
 def _mtime_changed_since(root: Path, since_ts: str, snapshot_paths: set[str]) -> set[str]:
     """Fallback: compare file mtimes against since_ts ISO string."""
     try:
-        from datetime import datetime
         cutoff = datetime.fromisoformat(since_ts.replace("Z", "+00:00")).timestamp()
     except Exception:
         return set()
