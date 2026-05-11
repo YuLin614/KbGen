@@ -203,3 +203,26 @@ def test_get_parser_ts():
 
 def test_get_parser_unknown_returns_none():
     assert get_parser(Path("file.unknown")) is None
+
+
+# ── Non-JS language parsers ───────────────────────────────────────────────────
+
+def test_get_parser_go_does_not_crash():
+    p = get_parser(Path("file.go"))
+    if p is not None:
+        result = p.extract_imports("package main\nimport \"fmt\"", Path("file.go"))
+        assert isinstance(result, list)
+
+
+def test_get_parser_java_does_not_crash():
+    p = get_parser(Path("file.java"))
+    if p is not None:
+        result = p.extract_imports("import java.util.List;", Path("file.java"))
+        assert isinstance(result, list)
+
+
+def test_get_parser_rust_does_not_crash():
+    p = get_parser(Path("file.rs"))
+    if p is not None:
+        result = p.extract_imports("use std::collections::HashMap;", Path("file.rs"))
+        assert isinstance(result, list)

@@ -240,58 +240,74 @@ class TreeSitterParser:
         self._parser = Parser(language)
         self._use_require_pairing = True  # JS-style: need to check fn name
 
-        # Build import query — same for JS and TS
-        self._import_query = Query(language, _JS_IMPORT_QUERY)
-        self._require_query = Query(language, _JS_REQUIRE_QUERY)
+        # Build import query — start with JS/TS default; may fail for other grammars.
+        # Non-JS languages override these via _make_ts_parser_with_queries().
+        try:
+            self._import_query: Query | None = Query(language, _JS_IMPORT_QUERY)
+        except Exception:
+            self._import_query = None
+        try:
+            self._require_query: Query | None = Query(language, _JS_REQUIRE_QUERY)
+        except Exception:
+            self._require_query = None
 
         # Build export query — JS uses identifier, TS uses type_identifier for classes
         try:
-            self._export_query = Query(language, _JS_EXPORT_QUERY)
+            self._export_query: Query | None = Query(language, _JS_EXPORT_QUERY)
         except Exception:
             try:
                 self._export_query = Query(language, _TS_EXPORT_QUERY)
             except Exception:
-                # Fallback: just capture named function declarations
-                self._export_query = Query(language, "(function_declaration name: (identifier) @name)")
+                try:
+                    # Fallback: just capture named function declarations
+                    self._export_query = Query(language, "(function_declaration name: (identifier) @name)")
+                except Exception:
+                    self._export_query = None
 
     def _parse(self, source: str):
         return self._parser.parse(source.encode("utf-8", errors="replace"))
 
     def extract_imports(self, source: str, path: Path) -> list[str]:
+        if self._import_query is None and self._require_query is None:
+            return []
         try:
             tree = self._parse(source)
             result: list[str] = []
 
             # Primary import query (ESM imports / language-specific)
-            for node in _captures(self._import_query, tree.root_node, "import"):
-                val = _strip_quotes(node.text.decode("utf-8", errors="replace"))
-                if val:
-                    result.append(val)
-
-            # Require query (JS) - use matches() for paired fn+import
-            if self._use_require_pairing:
-                for _pattern_idx, capture_dict in _matches(self._require_query, tree.root_node):
-                    fn_nodes = capture_dict.get("fn", [])
-                    imp_nodes = capture_dict.get("import", [])
-                    if fn_nodes and imp_nodes:
-                        fn_node = fn_nodes[0]
-                        imp_node = imp_nodes[0]
-                        if fn_node.text == b"require":
-                            val = _strip_quotes(imp_node.text.decode("utf-8", errors="replace"))
-                            if val:
-                                result.append(val)
-            else:
-                # For non-JS languages with import-like queries that don't need pairing
-                for node in _captures(self._require_query, tree.root_node, "import"):
+            if self._import_query is not None:
+                for node in _captures(self._import_query, tree.root_node, "import"):
                     val = _strip_quotes(node.text.decode("utf-8", errors="replace"))
                     if val:
                         result.append(val)
+
+            # Require query (JS) - use matches() for paired fn+import
+            if self._require_query is not None:
+                if self._use_require_pairing:
+                    for _pattern_idx, capture_dict in _matches(self._require_query, tree.root_node):
+                        fn_nodes = capture_dict.get("fn", [])
+                        imp_nodes = capture_dict.get("import", [])
+                        if fn_nodes and imp_nodes:
+                            fn_node = fn_nodes[0]
+                            imp_node = imp_nodes[0]
+                            if fn_node.text == b"require":
+                                val = _strip_quotes(imp_node.text.decode("utf-8", errors="replace"))
+                                if val:
+                                    result.append(val)
+                else:
+                    # For non-JS languages with import-like queries that don't need pairing
+                    for node in _captures(self._require_query, tree.root_node, "import"):
+                        val = _strip_quotes(node.text.decode("utf-8", errors="replace"))
+                        if val:
+                            result.append(val)
 
             return result
         except Exception:
             return []
 
     def extract_exports(self, source: str, path: Path) -> list[tuple[str, int]]:
+        if self._export_query is None:
+            return []
         try:
             tree = self._parse(source)
             result: list[tuple[str, int]] = []
