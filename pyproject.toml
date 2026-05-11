@@ -10,7 +10,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "kbgen"}]
-dependencies = []
+dependencies = [
+    "tree-sitter>=0.22",
+    "tree-sitter-javascript>=0.22",
+    "tree-sitter-typescript>=0.22",
+    "tree-sitter-go>=0.22",
+    "tree-sitter-java>=0.22",
+    "tree-sitter-rust>=0.22",
+    "tree-sitter-c-sharp>=0.22",
+    "tree-sitter-php>=0.22",
+    "tree-sitter-ruby>=0.22",
+]
 
 [project.scripts]
 kbgen = "kbgen.cli:main"
