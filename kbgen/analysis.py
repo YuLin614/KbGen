@@ -307,7 +307,7 @@ def structural_scan(root: Path, config: KbgenConfig) -> ScanData:
             if file.name in all_entry_names:
                 entry_modules.add(module)
 
-            for candidate in parse_import_candidates(text, file.suffix.lower()):
+            for candidate in parse_import_candidates(file, text):
                 resolved_module, resolved_path = resolve_import_target(
                     candidate,
                     file,

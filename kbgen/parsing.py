@@ -117,25 +117,12 @@ def collect_source_files(root: Path, extra_ignore: set[str] | None = None) -> li
     return out
 
 
-def parse_import_candidates(text: str, suffix: str) -> list[str]:
-    candidates: list[str] = []
-    if suffix == ".py":
-        for m in re.finditer(r"^\s*import\s+([a-zA-Z0-9_\.]+)", text, flags=re.MULTILINE):
-            candidates.append(m.group(1))
-        for m in re.finditer(r"^\s*from\s+([\.a-zA-Z0-9_]+)\s+import\s+", text, flags=re.MULTILINE):
-            value = m.group(1)
-            if value.startswith("."):
-                candidates.append(value)
-            else:
-                candidates.append(value)
-    elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        for m in re.finditer(r"from\s+[\"']([^\"']+)[\"']", text):
-            target = m.group(1)
-            candidates.append(target)
-        for m in re.finditer(r"require\([\"']([^\"']+)[\"']\)", text):
-            target = m.group(1)
-            candidates.append(target)
-    return candidates
+def parse_import_candidates(path: Path, text: str) -> list[str]:
+    from kbgen.ast_parsers import get_parser
+    parser = get_parser(path)
+    if parser is None:
+        return []
+    return parser.extract_imports(text, path)
 
 
 def extract_exports(path: Path, text: str) -> list[str]:
