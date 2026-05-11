@@ -8,7 +8,7 @@ from pathlib import Path
 from kbgen.benchmark import benchmark, format_markdown_report
 from kbgen.claude_wrapper import run_claude_with_proxy
 from kbgen.core import full_scan, incremental_update, init_artifacts
-from kbgen.gain import show_gain
+from kbgen.gain import show_dashboard, show_gain
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,6 +105,30 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Number of recent sessions to display (default: 10)",
     )
+    dashboard_parser = sub.add_parser("dashboard", help="Show token savings dashboard (terminal + HTML)")
+    dashboard_parser.add_argument(
+        "--last",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Trend sparkline sessions (default: 10)",
+    )
+    dashboard_parser.add_argument(
+        "--no-html",
+        action="store_true",
+        help="Skip HTML report generation",
+    )
+    dashboard_parser.add_argument(
+        "--open",
+        action="store_true",
+        dest="auto_open",
+        help="Auto-open HTML report in browser",
+    )
+    dashboard_parser.add_argument(
+        "--output",
+        default=None,
+        help="HTML output path (default: .ai/dashboard.html)",
+    )
     return parser
 
 
@@ -164,6 +188,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "gain":
         show_gain(n_recent=args.last, show_history=args.history)
+        return 0
+
+    if args.command == "dashboard":
+        output_path = Path(args.output).resolve() if args.output else None
+        show_dashboard(
+            root=root,
+            n_recent=args.last,
+            no_html=args.no_html,
+            auto_open=args.auto_open,
+            output_path=output_path,
+        )
         return 0
 
     print(f"unknown command: {args.command}", file=sys.stderr)
