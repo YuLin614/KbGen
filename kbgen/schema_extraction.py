@@ -1,10 +1,102 @@
 from __future__ import annotations
 
-import re
+import ast as stdlib_ast
 from collections import defaultdict
 from pathlib import Path
 
 from kbgen.constants import DB_SCHEMA_LIMIT
+
+
+def _safe_parse(text: str, path: Path) -> stdlib_ast.Module | None:
+    try:
+        return stdlib_ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return None
+
+
+def _call_name(call: stdlib_ast.Call) -> str:
+    func = call.func
+    if isinstance(func, stdlib_ast.Name):
+        return func.id
+    if isinstance(func, stdlib_ast.Attribute):
+        prefix = _attr_chain(func.value)
+        return f"{prefix}.{func.attr}" if prefix else func.attr
+    return ""
+
+
+def _attr_chain(node: stdlib_ast.expr) -> str:
+    if isinstance(node, stdlib_ast.Name):
+        return node.id
+    if isinstance(node, stdlib_ast.Attribute):
+        p = _attr_chain(node.value)
+        return f"{p}.{node.attr}" if p else node.attr
+    return ""
+
+
+def _str_arg(call: stdlib_ast.Call, idx: int) -> str | None:
+    if idx < len(call.args):
+        arg = call.args[idx]
+        if isinstance(arg, stdlib_ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+    return None
+
+
+def _get_tablename(cls: stdlib_ast.ClassDef) -> str | None:
+    for node in cls.body:
+        if isinstance(node, stdlib_ast.Assign):
+            for target in node.targets:
+                if isinstance(target, stdlib_ast.Name) and target.id == "__tablename__":
+                    if isinstance(node.value, stdlib_ast.Constant) and isinstance(node.value.value, str):
+                        return node.value.value
+    return None
+
+
+def _get_columns(cls: stdlib_ast.ClassDef) -> list[str]:
+    cols: list[str] = []
+    for node in cls.body:
+        if isinstance(node, stdlib_ast.AnnAssign):
+            if isinstance(node.target, stdlib_ast.Name):
+                name = node.target.id
+                if not name.startswith("_"):
+                    cols.append(name)
+        elif isinstance(node, stdlib_ast.Assign):
+            for target in node.targets:
+                if not isinstance(target, stdlib_ast.Name):
+                    continue
+                name = target.id
+                if name.startswith("_") or name == "__tablename__":
+                    continue
+                if isinstance(node.value, stdlib_ast.Call):
+                    fn = _call_name(node.value)
+                    if any(k in fn for k in ("Column", "mapped_column", "relationship")):
+                        cols.append(name)
+    return cols
+
+
+def _get_foreignkeys(cls: stdlib_ast.ClassDef) -> list[str]:
+    fks: list[str] = []
+    for node in stdlib_ast.walk(cls):
+        if isinstance(node, stdlib_ast.Call):
+            fn = _call_name(node)
+            if "ForeignKey" in fn and "Constraint" not in fn:
+                val = _str_arg(node, 0)
+                if val:
+                    fks.append(val)
+    return fks
+
+
+def _get_table_fk_constraints(cls: stdlib_ast.ClassDef) -> list[str]:
+    fks: list[str] = []
+    for node in stdlib_ast.walk(cls):
+        if isinstance(node, stdlib_ast.Call):
+            fn = _call_name(node)
+            if "ForeignKeyConstraint" in fn and len(node.args) >= 2:
+                arg = node.args[1]
+                if isinstance(arg, (stdlib_ast.List, stdlib_ast.Tuple)):
+                    for elt in arg.elts:
+                        if isinstance(elt, stdlib_ast.Constant) and isinstance(elt.value, str):
+                            fks.append(elt.value)
+    return fks
 
 
 def extract_db_schema_index(root: Path, modules: dict[str, list[Path]]) -> list[str]:
@@ -24,18 +116,6 @@ def extract_db_schema_index(root: Path, modules: dict[str, list[Path]]) -> list[
         if src_table and target_table:
             fk_edges.add((module, src_table, target_table))
 
-    def extract_call_block(text: str, open_paren_idx: int) -> str:
-        depth = 0
-        for i in range(open_paren_idx, len(text)):
-            ch = text[i]
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-                if depth == 0:
-                    return text[open_paren_idx + 1 : i]
-        return ""
-
     for module, files in modules.items():
         for f in files:
             if f.suffix.lower() != ".py":
@@ -47,76 +127,56 @@ def extract_db_schema_index(root: Path, modules: dict[str, list[Path]]) -> list[
                 continue
             try:
                 text = f.read_text(encoding="utf-8", errors="ignore")
+                tree = _safe_parse(text, f)
+                if tree is None:
+                    continue
             except Exception:
                 continue
 
-            for tab in re.finditer(r"__tablename__\s*=\s*['\"]([^'\"]+)['\"]", text):
-                table = tab.group(1)
-                add_table(module, table)
-
-                class_start = text.rfind("\nclass ", 0, tab.start())
-                if class_start < 0:
-                    class_start = 0
-                next_class = text.find("\nclass ", tab.end())
-                body = text[class_start : next_class if next_class >= 0 else len(text)]
-
-                for colm in re.finditer(
-                    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]+)?=\s*(?:db\.)?(?:Column|mapped_column)\s*\(",
-                    body,
-                    re.MULTILINE,
-                ):
-                    col_name = colm.group(1)
-                    if not col_name.startswith("_"):
+            for cls_node in (n for n in stdlib_ast.walk(tree) if isinstance(n, stdlib_ast.ClassDef)):
+                table = _get_tablename(cls_node)
+                if table:
+                    add_table(module, table)
+                    for col_name in _get_columns(cls_node):
                         add_col(module, table, col_name)
-                for fkm in re.finditer(r"ForeignKey\(\s*['\"]([^'\"]+)['\"]", body):
-                    add_fk(module, table, fkm.group(1))
+                    for fk_target in _get_foreignkeys(cls_node):
+                        add_fk(module, table, fk_target)
+                    for fk_target in _get_table_fk_constraints(cls_node):
+                        add_fk(module, table, fk_target)
 
-            for tm in re.finditer(r"(?:db\.)?Table\s*\(\s*['\"]([^'\"]+)['\"]", text):
-                table = tm.group(1)
-                add_table(module, table)
-                open_idx = text.find("(", tm.start())
-                if open_idx < 0:
-                    continue
-                block = extract_call_block(text, open_idx)
-                if not block:
-                    continue
-                for colm in re.finditer(r"(?:sa\.)?Column\s*\(\s*['\"]([^'\"]+)['\"]", block):
-                    add_col(module, table, colm.group(1))
-                for fkm in re.finditer(r"(?:sa\.)?ForeignKey\(\s*['\"]([^'\"]+)['\"]", block):
-                    add_fk(module, table, fkm.group(1))
-                for fkm in re.finditer(
-                    r"(?:sa\.)?ForeignKeyConstraint\s*\(\s*\[[^\]]*\]\s*,\s*\[\s*['\"]([^'\"]+)['\"]",
-                    block,
-                ):
-                    add_fk(module, table, fkm.group(1))
-
-            for tm in re.finditer(r"op\.create_table\s*\(\s*['\"]([^'\"]+)['\"]", text):
-                table = tm.group(1)
-                add_table(module, table)
-                open_idx = text.find("(", tm.start())
-                if open_idx < 0:
-                    continue
-                block = extract_call_block(text, open_idx)
-                if not block:
-                    continue
-                for colm in re.finditer(r"sa\.Column\s*\(\s*['\"]([^'\"]+)['\"]", block):
-                    add_col(module, table, colm.group(1))
-                for fkm in re.finditer(r"(?:sa\.)?ForeignKey\(\s*['\"]([^'\"]+)['\"]", block):
-                    add_fk(module, table, fkm.group(1))
-                for fkm in re.finditer(
-                    r"sa\.ForeignKeyConstraint\s*\(\s*\[[^\]]*\]\s*,\s*\[\s*['\"]([^'\"]+)['\"]",
-                    block,
-                ):
-                    add_fk(module, table, fkm.group(1))
-
-            for am in re.finditer(r"op\.add_column\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*sa\.Column\s*\(\s*['\"]([^'\"]+)['\"]", text):
-                add_col(module, am.group(1), am.group(2))
-
-            for fm in re.finditer(
-                r"op\.create_foreign_key\s*\(\s*['\"][^'\"]*['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]",
-                text,
-            ):
-                add_fk(module, fm.group(1), fm.group(2))
+            # Alembic migrations
+            for call in (n for n in stdlib_ast.walk(tree) if isinstance(n, stdlib_ast.Call)):
+                fn = _call_name(call)
+                if fn == "op.create_table":
+                    table = _str_arg(call, 0)
+                    if table:
+                        add_table(module, table)
+                        for arg in call.args[1:]:
+                            if isinstance(arg, stdlib_ast.Call):
+                                col_fn = _call_name(arg)
+                                if any(k in col_fn for k in ("Column", "sa.Column")):
+                                    col = _str_arg(arg, 0)
+                                    if col:
+                                        add_col(module, table, col)
+                                    for inner in stdlib_ast.walk(arg):
+                                        if isinstance(inner, stdlib_ast.Call):
+                                            inner_fn = _call_name(inner)
+                                            if any(k in inner_fn for k in ("ForeignKey", "ForeignKeyConstraint")):
+                                                fk = _str_arg(inner, 0)
+                                                if fk:
+                                                    add_fk(module, table, fk)
+                elif fn == "op.add_column":
+                    table = _str_arg(call, 0)
+                    col_arg = call.args[1] if len(call.args) > 1 else None
+                    if table and isinstance(col_arg, stdlib_ast.Call):
+                        col = _str_arg(col_arg, 0)
+                        if col:
+                            add_col(module, table, col)
+                elif fn == "op.create_foreign_key":
+                    src = _str_arg(call, 1)
+                    dst = _str_arg(call, 2)
+                    if src and dst:
+                        add_fk(module, src, dst)
 
     module_tables: dict[str, set[str]] = defaultdict(set)
     for mod, table in table_cols.keys():
