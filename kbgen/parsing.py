@@ -126,132 +126,21 @@ def parse_import_candidates(path: Path, text: str) -> list[str]:
 
 
 def extract_exports(path: Path, text: str) -> list[str]:
-    exports: set[str] = set()
-    suffix = path.suffix.lower()
-    if suffix == ".py":
-        for m in re.finditer(r"^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", text, flags=re.MULTILINE):
-            exports.add(m.group(1))
-        for m in re.finditer(r"^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[:\(]", text, flags=re.MULTILINE):
-            exports.add(m.group(1))
-    elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        for m in re.finditer(r"export\s+(?:async\s+)?(?:function|class|const|let|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)", text):
-            exports.add(m.group(1))
-
-        for m in re.finditer(
-            r"export\s+default\s+(?:async\s+)?(?:function|class)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-            text,
-        ):
-            exports.add(m.group(1))
-
-        for m in re.finditer(r"export\s+default\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;", text):
-            exports.add(m.group(1))
-
-        for _ in re.finditer(r"export\s+default\s+(?:async\s+)?function\s*\(", text):
-            exports.add("default")
-
-    if not exports and suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        if re.search(r"\b(page|layout|route|loading|error|template)\.(jsx?|tsx?)$", path.name, flags=re.IGNORECASE):
-            exports.add(path.stem)
-    return sorted(exports)[:10]
+    from kbgen.ast_parsers import get_parser
+    parser = get_parser(path)
+    if parser is None:
+        return []
+    pairs = parser.extract_exports(text, path)
+    return [name for name, _ in pairs][:10]
 
 
 def extract_export_anchors(path: Path, text: str, root: Path) -> list[str]:
-    anchors: set[str] = set()
-    suffix = path.suffix.lower()
+    from kbgen.ast_parsers import get_parser
+    parser = get_parser(path)
+    if parser is None:
+        return []
     rel = path.relative_to(root).as_posix()
-
-    if suffix == ".py":
-        for m in re.finditer(r"^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", text, flags=re.MULTILINE):
-            line = text.count("\n", 0, m.start()) + 1
-            anchors.add(f"{m.group(1)}@{rel}:{line}")
-        for m in re.finditer(r"^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[:\(]", text, flags=re.MULTILINE):
-            line = text.count("\n", 0, m.start()) + 1
-            anchors.add(f"{m.group(1)}@{rel}:{line}")
-        for m in re.finditer(
-            r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:Blueprint|APIRouter|Router)\s*\(",
-            text,
-            flags=re.MULTILINE,
-        ):
-            line = text.count("\n", 0, m.start()) + 1
-            anchors.add(f"{m.group(1)}@{rel}:{line}")
-    elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        seen_symbols: set[str] = set()
-
-        def add_anchor(symbol: str, line: int) -> None:
-            if symbol not in seen_symbols:
-                seen_symbols.add(symbol)
-                anchors.add(f"{symbol}@{rel}:{line}")
-
-        pattern = r"export\s+(?:async\s+)?(?:function|class|const|let|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)"
-        for m in re.finditer(pattern, text):
-            line = text.count("\n", 0, m.start()) + 1
-            add_anchor(m.group(1), line)
-
-        for m in re.finditer(
-            r"export\s+default\s+(?:async\s+)?(?:function|class)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-            text,
-        ):
-            line = text.count("\n", 0, m.start()) + 1
-            add_anchor(m.group(1), line)
-
-        for m in re.finditer(r"export\s+default\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;", text):
-            symbol = m.group(1)
-            decl = _find_js_symbol_declaration(text, symbol)
-            pos = decl if decl >= 0 else m.start()
-            line = text.count("\n", 0, pos) + 1
-            add_anchor(symbol, line)
-
-        for m in re.finditer(r"export\s+default\s+(?:async\s+)?function\s*\(", text):
-            line = text.count("\n", 0, m.start()) + 1
-            add_anchor("default", line)
-
-        if not anchors:
-            for symbol, pos in _find_component_like_symbols(text):
-                line = text.count("\n", 0, pos) + 1
-                add_anchor(symbol, line)
-                if len(anchors) >= 6:
-                    break
-
-    if not anchors and suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        parts = {p.lower() for p in path.parts}
-        if "app" in parts or "components" in parts:
-            anchors.add(f"{path.stem}@{rel}:1")
-    return sorted(anchors)[:10]
+    pairs = parser.extract_exports(text, path)
+    return [f"{name}@{rel}:{lineno}" for name, lineno in pairs][:10]
 
 
-def _find_js_symbol_declaration(text: str, symbol: str) -> int:
-    patterns = [
-        rf"\bfunction\s+{re.escape(symbol)}\s*\(",
-        rf"\bclass\s+{re.escape(symbol)}\b",
-        rf"\b(?:const|let|var)\s+{re.escape(symbol)}\s*=",
-    ]
-    best = -1
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            pos = match.start()
-            if best == -1 or pos < best:
-                best = pos
-    return best
-
-
-def _find_component_like_symbols(text: str) -> list[tuple[str, int]]:
-    out: list[tuple[str, int]] = []
-
-    for m in re.finditer(r"\bfunction\s+([A-Z][a-zA-Z0-9_]*)\s*\(", text):
-        out.append((m.group(1), m.start()))
-
-    for m in re.finditer(r"\b(?:const|let|var)\s+([A-Z][a-zA-Z0-9_]*)\s*=\s*(?:\([^\)]*\)\s*=>|[a-zA-Z_][a-zA-Z0-9_]*\s*=>)", text):
-        out.append((m.group(1), m.start()))
-
-    for m in re.finditer(r"\b(?:const|let|var)\s+([A-Z][a-zA-Z0-9_]*)\s*:\s*[a-zA-Z0-9_\.<>]+\s*=", text):
-        out.append((m.group(1), m.start()))
-
-    seen: set[str] = set()
-    unique: list[tuple[str, int]] = []
-    for symbol, pos in sorted(out, key=lambda x: x[1]):
-        if symbol in seen:
-            continue
-        seen.add(symbol)
-        unique.append((symbol, pos))
-    return unique
