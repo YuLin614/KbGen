@@ -122,3 +122,101 @@ def show_gain(n_recent: int = 10, show_history: bool = False) -> None:
     print(f"  Cache read       : {_fmt_num(total_cr)}")
     print(f"  Cache write      : {_fmt_num(total_cw)}")
     print(f"  Total input      : {_fmt_num(total_inp + total_cr + total_cw)}  (all sources)")
+
+
+_SPARK_BARS = "▁▂▃▄▅▆▇█"
+
+
+def _sparkline(values: list[float]) -> str:
+    if not values:
+        return ""
+    lo, hi = min(values), max(values)
+    rng = hi - lo if hi != lo else 1
+    return "".join(
+        _SPARK_BARS[int((v - lo) / rng * (len(_SPARK_BARS) - 1))]
+        for v in values
+    )
+
+
+def show_dashboard(
+    root: Path,
+    n_recent: int = 10,
+    no_html: bool = False,
+    auto_open: bool = False,
+    output_path: Path | None = None,
+) -> None:
+    from kbgen.quality import compute_quality, format_quality_terminal
+    from kbgen.report import generate_html
+
+    sessions = _load_sessions()
+    quality = compute_quality(root)
+
+    snap_sessions = [s for s in sessions if s.get("snapshot")]
+    no_snap_sessions = [s for s in sessions if not s.get("snapshot")]
+
+    project_name = root.name
+
+    width = 56
+    border = "═" * width
+
+    print(f"╔{border}╗")
+    print(f"║{'kbGen Dashboard':^{width}}║")
+    print(f"║{f'Project: {project_name}':^{width}}║")
+    print(f"╚{border}╝")
+    print()
+
+    # Token savings
+    if snap_sessions and no_snap_sessions:
+        avg_snap = sum(_total_input(s) for s in snap_sessions) / len(snap_sessions)
+        avg_no_snap = sum(_total_input(s) for s in no_snap_sessions) / len(no_snap_sessions)
+        saving_pct = (1 - avg_snap / avg_no_snap) * 100 if avg_no_snap > 0 else 0.0
+        direction = "▲" if saving_pct >= 0 else "▼"
+        print("TOKEN SAVINGS")
+        print(f"  With snapshot:    avg {_fmt_num(int(avg_snap)):>9} input/session  ({len(snap_sessions)} sessions)")
+        print(f"  Without snapshot: avg {_fmt_num(int(avg_no_snap)):>9} input/session  ({len(no_snap_sessions)} sessions)")
+        print(f"  Estimated saving: {direction} {abs(saving_pct):.1f}%")
+        print()
+    elif snap_sessions:
+        print(f"TOKEN SAVINGS: {len(snap_sessions)} snap session(s), no baseline yet.")
+        print()
+    else:
+        print("TOKEN SAVINGS: no sessions recorded.")
+        print()
+
+    # Trend sparkline
+    recent_snap = [_total_input(s) for s in snap_sessions[-n_recent:]]
+    if recent_snap:
+        print(f"TREND (last {len(recent_snap)} snap sessions, input tokens lower=better)")
+        print(f"  {_sparkline(recent_snap)}")
+        recent_all = sessions[-n_recent:]
+        snap_used = ["✓" if s.get("snapshot") else "✗" for s in recent_all]
+        print(f"  {''.join(snap_used)}  ← snapshot used (last {len(recent_all)})")
+        print()
+
+    # Quality
+    print("QUALITY")
+    print(format_quality_terminal(quality, indent="  "))
+    print()
+
+    # HTML
+    if not no_html:
+        out = output_path or (root / ".ai" / "dashboard.html")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        html = generate_html(
+            sessions,
+            quality if quality.get("available") else None,
+            project_name,
+        )
+        out.write_text(html, encoding="utf-8")
+        print(f"HTML report: {out}")
+        if auto_open:
+            import webbrowser
+            webbrowser.open(out.as_uri())
+        else:
+            try:
+                answer = input("Open in browser? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer == "y":
+                import webbrowser
+                webbrowser.open(out.as_uri())
